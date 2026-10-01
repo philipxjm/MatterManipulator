@@ -90,10 +90,9 @@ import com.gtnewhorizons.modularui.common.widget.VanillaButtonWidget;
 import com.gtnewhorizons.modularui.common.widget.textfield.NumericWidget;
 import com.recursive_pineapple.matter_manipulator.GlobalMMConfig;
 import com.recursive_pineapple.matter_manipulator.MMMod;
-import com.recursive_pineapple.matter_manipulator.client.ClientTasks;
 import com.recursive_pineapple.matter_manipulator.client.gui.DirectionDrawable;
-import com.recursive_pineapple.matter_manipulator.client.gui.GuiImportSchematic;
 import com.recursive_pineapple.matter_manipulator.client.gui.RadialMenuBuilder;
+import com.recursive_pineapple.matter_manipulator.client.gui.SchematicImportScreens;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockSpec;
 import com.recursive_pineapple.matter_manipulator.common.building.IBuildable;
 import com.recursive_pineapple.matter_manipulator.common.building.InteropConstants;
@@ -1419,7 +1418,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                     .label(StatCollector.translateToLocal("mm.gui.import_schematic.choose"))
                     .onClicked(() -> {
                         // The menu closes after this returns; open the file list once it has.
-                        ClientTasks.nextTick(() -> Minecraft.getMinecraft().displayGuiScreen(new GuiImportSchematic()));
+                        SchematicImportScreens.openImport();
                     })
                 .done()
                 .option()
