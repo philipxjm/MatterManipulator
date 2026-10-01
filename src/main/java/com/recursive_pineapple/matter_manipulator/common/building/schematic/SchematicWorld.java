@@ -82,6 +82,9 @@ public class SchematicWorld extends World {
         }, "MM_SCHEMATIC", null, new WorldSettings(new WorldInfo(new NBTTagCompound())), new Profiler());
 
         this.rand = new XSTR();
+        // This World constructor stores the provider as given (null); the analysis reads provider.dimensionId for
+        // every block (ImmutableBlockSpec.instantiate), so borrow the real world's.
+        this.provider = world.provider;
         this.world = world;
         this.schematic = schematic;
         this.chunkProvider = world.getChunkProvider();
