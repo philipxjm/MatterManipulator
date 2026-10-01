@@ -14,10 +14,15 @@ import cpw.mods.fml.common.registry.GameRegistry.Type;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-@Mod(modid = MMMod.MODID, version = Tags.VERSION, name = "Matter Manipulator", acceptedMinecraftVersions = "[1.7.10]")
+// Schematic-import fork: reports the stock version it is built on, because Forge requires the same version on both
+// sides and stock Matter Manipulator accepts no other. Import traffic uses its own channel (SchematicChannel), so the
+// fork interoperates with stock clients and servers. Tags.VERSION still names the actual build in the log.
+@Mod(modid = MMMod.MODID, version = MMMod.PROTOCOL_VERSION, name = "Matter Manipulator", acceptedMinecraftVersions = "[1.7.10]")
 public class MMMod {
 
     public static final String MODID = "matter-manipulator";
+    /** The stock release this fork is built on and interoperates with. */
+    public static final String PROTOCOL_VERSION = "0.1.55-GTNH";
     public static final Logger LOG = LogManager.getLogger(MODID);
 
     @SidedProxy(
