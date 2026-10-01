@@ -36,6 +36,9 @@ public class SchematicWorld extends World {
     private final Map<Integer, TileEntity> tiles = new HashMap<>();
 
     public SchematicWorld(World world, SchematicData schematic) {
+        // This World constructor stores the provider as given (final, so only here). Pass the real world's: the
+        // analysis reads provider.dimensionId for every block (ImmutableBlockSpec.instantiate), and null made every
+        // block fail.
         super(new ISaveHandler() {
 
             @Override
@@ -79,12 +82,9 @@ public class SchematicWorld extends World {
             public File getWorldDirectory() {
                 return null;
             }
-        }, "MM_SCHEMATIC", null, new WorldSettings(new WorldInfo(new NBTTagCompound())), new Profiler());
+        }, "MM_SCHEMATIC", world.provider, new WorldSettings(new WorldInfo(new NBTTagCompound())), new Profiler());
 
         this.rand = new XSTR();
-        // This World constructor stores the provider as given (null); the analysis reads provider.dimensionId for
-        // every block (ImmutableBlockSpec.instantiate), so borrow the real world's.
-        this.provider = world.provider;
         this.world = world;
         this.schematic = schematic;
         this.chunkProvider = world.getChunkProvider();
