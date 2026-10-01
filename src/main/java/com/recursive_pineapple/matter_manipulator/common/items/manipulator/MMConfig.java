@@ -6,6 +6,7 @@ import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.world.World;
 
 import com.recursive_pineapple.matter_manipulator.common.building.BlockSpec;
+import com.recursive_pineapple.matter_manipulator.common.building.schematic.ImportedSchematic;
 import com.recursive_pineapple.matter_manipulator.common.data.WeightedSpecList;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockRemoveMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockSelectMode;
@@ -58,6 +59,43 @@ public class MMConfig {
      * tunnels auto-placed at the source.
      */
     public boolean replaceInterfacesWithP2P = false;
+
+    /**
+     * A schematic file imported as the copy source. While set (and copying), it replaces the marked copy region:
+     * the source is (0, 0, 0)..(width-1, height-1, length-1) of the schematic, pasted at coord C as usual.
+     */
+    @Nullable
+    public ImportedSchematic importedSchematic;
+
+    /** True when copying from an imported schematic rather than a marked region. */
+    public boolean isImporting() {
+        return importedSchematic != null && placeMode == PlaceMode.COPYING;
+    }
+
+    /**
+     * Copy source corner A: coord A, or (0, 0, 0) of an imported schematic, in the paste's dimension (or the given
+     * world's, before a paste is marked).
+     */
+    @Nullable
+    public Location getSourceA(@Nullable World world) {
+        if (!isImporting()) return coordA;
+        final Integer dim = importDimension(world);
+        return dim == null ? null : new Location(dim, 0, 0, 0);
+    }
+
+    /** Copy source corner B: coord B, or the far corner of an imported schematic. */
+    @Nullable
+    public Location getSourceB(@Nullable World world) {
+        if (!isImporting()) return coordB;
+        final Integer dim = importDimension(world);
+        return dim == null ? null : new Location(dim, importedSchematic.width - 1, importedSchematic.height - 1, importedSchematic.length - 1);
+    }
+
+    @Nullable
+    private Integer importDimension(@Nullable World world) {
+        if (coordC != null) return coordC.worldId;
+        return world != null ? world.provider.dimensionId : null;
+    }
 
     public Location getCoordA(World world, Vector3i lookingAt) {
         if (coordAOffset == null) {
@@ -226,6 +264,7 @@ public class MMConfig {
     }
 
     public VoxelAABB getPasteVisualDeltas(World world, boolean transform) {
+        final Location coordA = getSourceA(world), coordB = getSourceB(world);
         if (!Location.areCompatible(coordA, coordB, coordC)) return null;
         if (world != null && coordA.worldId != world.provider.dimensionId) return null;
 
@@ -245,6 +284,7 @@ public class MMConfig {
     }
 
     public VoxelAABB getCopyVisualDeltas(World world) {
+        if (isImporting()) return null;
         if (!Location.areCompatible(coordA, coordB)) return null;
         if (world != null && coordA.worldId != world.provider.dimensionId) return null;
 
@@ -278,6 +318,7 @@ public class MMConfig {
         result = prime * result + Boolean.hashCode(linkExternalHubs);
         result = prime * result + Boolean.hashCode(replaceCribsWithProxies);
         result = prime * result + Boolean.hashCode(replaceInterfacesWithP2P);
+        result = prime * result + ((importedSchematic == null) ? 0 : importedSchematic.hashCode());
         return result;
     }
 
@@ -341,6 +382,7 @@ public class MMConfig {
         if (linkExternalHubs != other.linkExternalHubs) return false;
         if (replaceCribsWithProxies != other.replaceCribsWithProxies) return false;
         if (replaceInterfacesWithP2P != other.replaceInterfacesWithP2P) return false;
+        if (!java.util.Objects.equals(importedSchematic, other.importedSchematic)) return false;
         return true;
     }
 }

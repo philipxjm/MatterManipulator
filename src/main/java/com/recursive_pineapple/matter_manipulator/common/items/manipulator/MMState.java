@@ -64,6 +64,7 @@ import com.recursive_pineapple.matter_manipulator.common.building.PendingBlock;
 import com.recursive_pineapple.matter_manipulator.common.building.PortableItemStack;
 import com.recursive_pineapple.matter_manipulator.common.building.SmartCopyIntegration;
 import com.recursive_pineapple.matter_manipulator.common.building.SmartCopyIntegration.SmartCopyAction;
+import com.recursive_pineapple.matter_manipulator.common.building.schematic.SchematicImport;
 import com.recursive_pineapple.matter_manipulator.common.data.WeightedSpecList;
 import com.recursive_pineapple.matter_manipulator.common.items.MMUpgrades;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.ItemMatterManipulator.ManipulatorTier;
@@ -344,17 +345,22 @@ public class MMState {
     }
 
     private List<PendingBlock> getAnalysis(World world) {
-        Location coordA = config.coordA;
-        Location coordB = config.coordB;
+        final boolean importing = config.isImporting();
+        Location coordA = config.getSourceA(world);
+        Location coordB = config.getSourceB(world);
         Location coordC = config.coordC;
 
         if (!Location.areCompatible(coordA, coordB, coordC) || !coordA.isInWorld(world)) { return new ArrayList<>(); }
 
         // MOVING's result is only used visually since it has a special build algorithm
-        RegionAnalysis analysis = BlockAnalyzer
-            .analyzeRegion(world, coordA, coordB, config.placeMode == PlaceMode.COPYING ? true : false);
+        RegionAnalysis analysis = importing ?
+            SchematicImport.analyze(world, config.importedSchematic) :
+            BlockAnalyzer.analyzeRegion(world, coordA, coordB, config.placeMode == PlaceMode.COPYING ? true : false);
 
-        if (config.placeMode == PlaceMode.COPYING && (config.replaceCribsWithProxies || config.replaceInterfacesWithP2P)) {
+        if (analysis == null) { return new ArrayList<>(); }
+
+        // Smart copy rewires against the source blocks in the world; an imported schematic has none.
+        if (!importing && config.placeMode == PlaceMode.COPYING && (config.replaceCribsWithProxies || config.replaceInterfacesWithP2P)) {
             applySmartCopySubstitutions(world, analysis.blocks, coordA);
         }
 

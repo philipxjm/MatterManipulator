@@ -308,3 +308,20 @@ mm.tooltip.moving.cut_b=Cut Coordinate B: %s
 mm.tooltip.exchanging.removable=Removable blocks: %s
 mm.tooltip.exchanging.replacing=Replacing blocks with: %s
 mm.tooltip.cable=Cable: %s
+
+# Schematic import (copy from a .schematic file instead of a marked region)
+mm.gui.import_schematic=Import Schematic
+mm.gui.import_schematic.choose=Choose File...
+mm.gui.import_schematic.clear=Clear Import
+mm.gui.import_schematic.title=Import Schematic
+mm.gui.import_schematic.import=Import
+mm.gui.import_schematic.up=Up
+mm.gui.import_schematic.empty=No .schematic files here (put them in .minecraft/schematics)
+mm.tooltip.copying.schematic=Copying from schematic: %s
+mm.info.schematic_imported=Imported %s (%dx%dx%d). Mark a paste location to place it.
+mm.info.schematic_unknown_blocks=%d blocks in the schematic are not in this game and will be skipped: %s
+mm.info.error.schematic_too_big=%s is too big to import.
+mm.info.error.schematic_upload_failed=Importing %s failed; try again.
+mm.info.error.schematic_unreadable=Could not read %s: %s
+mm.info.error.schematic_hold_manipulator=Hold the Matter Manipulator while importing a schematic.
+mm.info.error.schematic_needs_copying=This Matter Manipulator cannot copy, so it cannot import schematics.

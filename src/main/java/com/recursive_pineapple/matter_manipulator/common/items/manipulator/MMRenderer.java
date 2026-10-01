@@ -334,8 +334,10 @@ public class MMRenderer {
     }
 
     private static void renderRegions(RenderWorldLastEvent event, EntityPlayer player, MMState state, ItemMatterManipulator manipulator) {
-        Location sourceA = state.config.coordA;
-        Location sourceB = state.config.coordB;
+        // An imported schematic stands in for the copy region: no source box in the world, just the paste.
+        final boolean importing = state.config.isImporting();
+        Location sourceA = importing ? state.config.getSourceA(player.worldObj) : state.config.coordA;
+        Location sourceB = importing ? state.config.getSourceB(player.worldObj) : state.config.coordB;
         Location paste = state.config.coordC;
 
         Vector3i lookingAt = MMUtils.getLookingAtLocation(player);
@@ -378,9 +380,17 @@ public class MMRenderer {
             }
         }
 
-        state.config.coordA = sourceA;
-        state.config.coordB = sourceB;
+        if (!importing) {
+            state.config.coordA = sourceA;
+            state.config.coordB = sourceB;
+        }
         state.config.coordC = paste;
+
+        if (importing) {
+            // The virtual corners follow the paste's dimension, which may just have been marked.
+            sourceA = state.config.getSourceA(player.worldObj);
+            sourceB = state.config.getSourceB(player.worldObj);
+        }
 
         boolean isSourceAValid = sourceA != null && sourceA.isInWorld(player.worldObj);
         boolean isSourceBValid = sourceB != null && sourceB.isInWorld(player.worldObj);
@@ -401,7 +411,7 @@ public class MMRenderer {
         BoxRenderer.INSTANCE.start(event.partialTicks);
 
         try {
-            if (isSourceAValid && isSourceBValid) {
+            if (isSourceAValid && isSourceBValid && !importing) {
                 Objects.requireNonNull(sourceA);
                 Objects.requireNonNull(sourceB);
 

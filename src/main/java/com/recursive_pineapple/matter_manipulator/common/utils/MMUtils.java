@@ -1420,17 +1420,25 @@ public class MMUtils {
     ) {
         state = state.clone();
 
-        if (!Location.areCompatible(state.config.coordA, state.config.coordB)) {
+        if (state.config.isImporting()) {
+            // An imported schematic has no source region; plan at the paste location.
+            if (state.config.coordC == null) {
+                sendErrorToPlayer(player, "mm.info.error.must_have_paste_region");
+                return;
+            }
+        } else if (!Location.areCompatible(state.config.coordA, state.config.coordB)) {
             sendErrorToPlayer(player, "mm.info.error.must_have_copy_region");
             return;
         }
 
+        final Location sourceA = state.config.getSourceA(player.getEntityWorld());
+
         if ((flags & PLAN_ALL) != 0) {
-            if (!Location.areCompatible(state.config.coordA, state.config.coordC)) {
-                state.config.coordC = state.config.coordA.clone();
+            if (!Location.areCompatible(sourceA, state.config.coordC)) {
+                state.config.coordC = sourceA.clone();
             }
         } else {
-            if (!Location.areCompatible(state.config.coordA, state.config.coordC)) {
+            if (!Location.areCompatible(sourceA, state.config.coordC)) {
                 sendErrorToPlayer(player, "mm.info.error.must_have_paste_region");
                 return;
             }

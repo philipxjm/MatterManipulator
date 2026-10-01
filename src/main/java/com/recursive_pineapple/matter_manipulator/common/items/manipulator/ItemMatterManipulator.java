@@ -90,7 +90,9 @@ import com.gtnewhorizons.modularui.common.widget.VanillaButtonWidget;
 import com.gtnewhorizons.modularui.common.widget.textfield.NumericWidget;
 import com.recursive_pineapple.matter_manipulator.GlobalMMConfig;
 import com.recursive_pineapple.matter_manipulator.MMMod;
+import com.recursive_pineapple.matter_manipulator.client.ClientTasks;
 import com.recursive_pineapple.matter_manipulator.client.gui.DirectionDrawable;
+import com.recursive_pineapple.matter_manipulator.client.gui.GuiImportSchematic;
 import com.recursive_pineapple.matter_manipulator.client.gui.RadialMenuBuilder;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockSpec;
 import com.recursive_pineapple.matter_manipulator.common.building.IBuildable;
@@ -575,8 +577,12 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             }
 
             if (state.config.placeMode == PlaceMode.COPYING) {
-                addInfoLine(desc, "mm.tooltip.copying.copy_a", state.config.coordA);
-                addInfoLine(desc, "mm.tooltip.copying.copy_b", state.config.coordB);
+                if (state.config.importedSchematic != null) {
+                    addInfoLine(desc, "mm.tooltip.copying.schematic", state.config.importedSchematic);
+                } else {
+                    addInfoLine(desc, "mm.tooltip.copying.copy_a", state.config.coordA);
+                    addInfoLine(desc, "mm.tooltip.copying.copy_b", state.config.coordB);
+                }
 
                 addInfoLine(desc, "mm.tooltip.paste", state.config.coordC);
 
@@ -1013,7 +1019,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         }
 
         state.config.arraySpan = state.config
-            .getArrayMult(world, state.config.coordA, state.config.coordB, state.config.coordC, lookingAt);
+            .getArrayMult(world, state.config.getSourceA(world), state.config.getSourceB(world), state.config.coordC, lookingAt);
     }
 
     /**
@@ -1405,6 +1411,23 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 .onClicked(() -> {
                     Messages.MarkCopy.sendToServer();
                 })
+            .done()
+            .branch()
+                .label(StatCollector.translateToLocal("mm.gui.import_schematic"))
+                .option()
+                    .label(StatCollector.translateToLocal("mm.gui.import_schematic.choose"))
+                    .onClicked(() -> {
+                        // The menu closes after this returns; open the file list once it has.
+                        ClientTasks.nextTick(() -> Minecraft.getMinecraft().displayGuiScreen(new GuiImportSchematic()));
+                    })
+                .done()
+                .option()
+                    .label(StatCollector.translateToLocal("mm.gui.import_schematic.clear"))
+                    .hidden(initialState.config.importedSchematic == null)
+                    .onClicked(() -> {
+                        Messages.ClearImportedSchematic.sendToServer();
+                    })
+                .done()
             .done()
             .branch()
                 .label(StatCollector.translateToLocal("mm.gui.edit_stack"))
