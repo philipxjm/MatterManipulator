@@ -12,8 +12,10 @@ import com.recursive_pineapple.matter_manipulator.common.entities.EntityItemLarg
 import com.recursive_pineapple.matter_manipulator.common.items.MMItems;
 import com.recursive_pineapple.matter_manipulator.common.items.RecipeInstallUpgrade;
 import com.recursive_pineapple.matter_manipulator.common.networking.Messages;
+import com.recursive_pineapple.matter_manipulator.common.networking.SchematicChannel;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods;
 import com.recursive_pineapple.matter_manipulator.server.BlockStateCommand;
+import com.recursive_pineapple.matter_manipulator.server.SchematicCommand;
 
 public class CommonProxy {
 
@@ -23,6 +25,7 @@ public class CommonProxy {
         GlobalMMConfig.init();
         MMItems.registerItems();
         Messages.init();
+        SchematicChannel.init();
     }
 
     public void init(FMLInitializationEvent event) {
@@ -41,6 +44,7 @@ public class CommonProxy {
 
     public void serverStarting(FMLServerStartingEvent event) {
         event.registerServerCommand(new BlockStateCommand());
+        event.registerServerCommand(new SchematicCommand());
     }
 
     public EntityPlayer getThePlayer() {

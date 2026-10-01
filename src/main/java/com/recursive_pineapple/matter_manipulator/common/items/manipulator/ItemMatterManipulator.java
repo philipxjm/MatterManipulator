@@ -110,6 +110,7 @@ import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMSta
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PlaceMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.Shape;
 import com.recursive_pineapple.matter_manipulator.common.networking.Messages;
+import com.recursive_pineapple.matter_manipulator.common.networking.SchematicChannel;
 import com.recursive_pineapple.matter_manipulator.common.utils.MMUtils;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods.Names;
@@ -1425,7 +1426,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                     .label(StatCollector.translateToLocal("mm.gui.import_schematic.clear"))
                     .hidden(initialState.config.importedSchematic == null)
                     .onClicked(() -> {
-                        Messages.ClearImportedSchematic.sendToServer();
+                        SchematicChannel.NET.sendToServer(new SchematicChannel.Clear());
                     })
                 .done()
             .done()

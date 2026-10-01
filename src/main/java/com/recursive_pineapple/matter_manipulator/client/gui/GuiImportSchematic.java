@@ -24,7 +24,7 @@ import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.common.building.schematic.SchematicData;
 import com.recursive_pineapple.matter_manipulator.common.building.schematic.SchematicImport;
 import com.recursive_pineapple.matter_manipulator.common.building.schematic.SchematicUploads;
-import com.recursive_pineapple.matter_manipulator.common.networking.Messages;
+import com.recursive_pineapple.matter_manipulator.common.networking.SchematicChannel;
 
 /**
  * Picks a .schematic from the game's schematics folder (Schematica's) and imports it into the held manipulator as
@@ -157,8 +157,7 @@ public class GuiImportSchematic extends GuiScreen {
             for (int offset = 0; offset < bytes.length; offset += SchematicUploads.CHUNK_BYTES) {
                 final byte[] chunk = Arrays
                     .copyOfRange(bytes, offset, Math.min(bytes.length, offset + SchematicUploads.CHUNK_BYTES));
-                Messages.ImportSchematicChunk
-                    .sendToServer(Messages.SchematicChunkPacket.of(sha1, name, bytes.length, offset, chunk));
+                SchematicChannel.NET.sendToServer(new SchematicChannel.Chunk(sha1, name, bytes.length, offset, chunk));
             }
 
             this.mc.displayGuiScreen(null);

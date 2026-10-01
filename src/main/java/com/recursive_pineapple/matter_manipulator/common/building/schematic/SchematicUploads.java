@@ -7,12 +7,14 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.ChatStyle;
+import net.minecraft.util.EnumChatFormatting;
 
 import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.ItemMatterManipulator;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PlaceMode;
-import com.recursive_pineapple.matter_manipulator.common.utils.MMUtils;
 
 /**
  * Server side of importing: client-to-server packets are capped at 32 KiB, so the client sends the file in chunks;
@@ -38,13 +40,22 @@ public final class SchematicUploads {
 
     private static final Map<UUID, Upload> UPLOADS = new ConcurrentHashMap<>();
 
+    // Plain text, not translation keys: players with the stock mod have no translations for these.
+    static void say(EntityPlayer player, EnumChatFormatting color, String text) {
+        player.addChatComponentMessage(new ChatComponentText(text).setChatStyle(new ChatStyle().setColor(color)));
+    }
+
+    static void error(EntityPlayer player, String text) {
+        say(player, EnumChatFormatting.RED, text);
+    }
+
     private SchematicUploads() {}
 
     public static void receive(EntityPlayer player, String sha1, String name, int total, int offset, byte[] chunk) {
         final UUID id = player.getUniqueID();
         if (total <= 0 || total > SchematicImport.MAX_FILE_BYTES) {
             UPLOADS.remove(id);
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_too_big", name);
+            error(player, name + " is too big to import.");
             return;
         }
 
@@ -56,7 +67,7 @@ public final class SchematicUploads {
         }
         if (offset != upload.received || offset + chunk.length > total) {
             UPLOADS.remove(id);
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_upload_failed", name);
+            error(player, "Importing " + name + " failed; try again.");
             return;
         }
         System.arraycopy(chunk, 0, upload.data, offset, chunk.length);
@@ -72,44 +83,53 @@ public final class SchematicUploads {
             !SchematicImport.sha1(upload.data)
                 .equals(upload.sha1)
         ) {
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_upload_failed", upload.name);
+            error(player, "Importing " + upload.name + " failed; try again.");
             return;
         }
+        apply(player, upload.name, upload.data);
+    }
+
+    /**
+     * Checks a schematic file, stores it on the server and makes it the copy source of the manipulator the player
+     * holds. Used by uploads from a client with this fork and by the /mmschematic command.
+     */
+    public static boolean apply(EntityPlayer player, String name, byte[] data) {
+        final String sha1 = SchematicImport.sha1(data);
 
         final SchematicData schematic;
         try {
-            schematic = SchematicData.parse(upload.data);
+            schematic = SchematicData.parse(data);
         } catch (IOException e) {
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_unreadable", upload.name, e.getMessage());
-            return;
+            error(player, "Could not read " + name + ": " + e.getMessage());
+            return false;
         }
         if ((long) schematic.width * schematic.height * schematic.length > SchematicImport.MAX_VOLUME) {
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_too_big", upload.name);
-            return;
+            error(player, name + " is too big to import.");
+            return false;
         }
 
         try {
-            SchematicImport.store(false, upload.sha1, upload.data);
+            SchematicImport.store(false, sha1, data);
         } catch (IOException e) {
-            MMMod.LOG.error("Schematic import: could not store " + upload.name, e);
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_upload_failed", upload.name);
-            return;
+            MMMod.LOG.error("Schematic import: could not store " + name, e);
+            error(player, "Importing " + name + " failed; try again.");
+            return false;
         }
 
         final ItemStack held = player.inventory.getCurrentItem();
         if (held == null || !(held.getItem() instanceof ItemMatterManipulator)) {
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_hold_manipulator");
-            return;
+            error(player, "Hold the Matter Manipulator while importing a schematic.");
+            return false;
         }
         final MMState state = ItemMatterManipulator.getState(held);
         if (!state.hasCap(ItemMatterManipulator.ALLOW_COPYING)) {
-            MMUtils.sendErrorToPlayer(player, "mm.info.error.schematic_needs_copying");
-            return;
+            error(player, "This Matter Manipulator cannot copy, so it cannot import schematics.");
+            return false;
         }
 
         state.config.importedSchematic = new ImportedSchematic(
-            upload.name,
-            upload.sha1,
+            name,
+            sha1,
             schematic.width,
             schematic.height,
             schematic.length
@@ -118,24 +138,22 @@ public final class SchematicUploads {
         state.config.action = null;
         ItemMatterManipulator.setState(held, state);
 
-        MMUtils.sendInfoToPlayer(
+        say(
             player,
-            "mm.info.schematic_imported",
-            upload.name,
-            schematic.width,
-            schematic.height,
-            schematic.length
+            EnumChatFormatting.GRAY,
+            "Imported " + name + " (" + schematic.width + "x" + schematic.height + "x" + schematic.length + "). Mark a paste location to place it."
         );
         if (!schematic.unknownBlocks.isEmpty()) {
-            MMUtils.sendWarningToPlayer(
+            say(
                 player,
-                "mm.info.schematic_unknown_blocks",
+                EnumChatFormatting.GOLD,
                 schematic.unknownBlocks.values()
                     .stream()
                     .mapToInt(Integer::intValue)
-                    .sum(),
-                String.join(", ", schematic.unknownBlocks.keySet())
+                    .sum() + " blocks in the schematic are not in this game and will be skipped: "
+                    + String.join(", ", schematic.unknownBlocks.keySet())
             );
         }
+        return true;
     }
 }

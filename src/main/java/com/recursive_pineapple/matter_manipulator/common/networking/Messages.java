@@ -30,7 +30,6 @@ import com.gtnewhorizons.modularui.common.internal.network.NetworkUtils;
 import com.recursive_pineapple.matter_manipulator.GlobalMMConfig.DebugConfig;
 import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.asm.Optional;
-import com.recursive_pineapple.matter_manipulator.common.building.schematic.SchematicUploads;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.ItemMatterManipulator;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.Location;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMRenderer;
@@ -401,32 +400,6 @@ public enum Messages {
             return packet;
         }
     })),
-    /** One chunk of a schematic file being imported as the copy source (see SchematicUploads). */
-    ImportSchematicChunk(server(new ISimplePacketHandler<SchematicChunkPacket>() {
-
-        @Override
-        public void handle(EntityPlayer player, SchematicChunkPacket packet) {
-            SchematicUploads.receive(player, packet.sha1, packet.name, packet.total, packet.offset, packet.data);
-        }
-
-        @Override
-        public SchematicChunkPacket getNewPacket(Messages message, @Nullable Object value) {
-            SchematicChunkPacket packet = new SchematicChunkPacket(message);
-
-            if (value instanceof SchematicChunkPacket chunk) {
-                packet.sha1 = chunk.sha1;
-                packet.name = chunk.name;
-                packet.total = chunk.total;
-                packet.offset = chunk.offset;
-                packet.data = chunk.data;
-            }
-
-            return packet;
-        }
-    })),
-    ClearImportedSchematic(server(simple((player, stack, manipulator, state) -> {
-        state.config.importedSchematic = null;
-    }))),
     BuildStatus(client(new ISimplePacketHandler<Messages.BuildStatusPacket>() {
 
         @Override
@@ -951,72 +924,6 @@ public enum Messages {
             message.pitch = buffer.readFloat();
 
             return message;
-        }
-    }
-
-    /** A chunk of a schematic file for ImportSchematicChunk. */
-    public static class SchematicChunkPacket extends SimplePacket {
-
-        public String sha1 = "", name = "";
-        public int total, offset;
-        public byte[] data = new byte[0];
-
-        public SchematicChunkPacket(Messages message) {
-            super(message);
-        }
-
-        /** The chunk to pass to {@code Messages.ImportSchematicChunk.sendToServer}. */
-        public static SchematicChunkPacket of(String sha1, String name, int total, int offset, byte[] data) {
-            SchematicChunkPacket packet = new SchematicChunkPacket(Messages.ImportSchematicChunk);
-            packet.sha1 = sha1;
-            packet.name = name;
-            packet.total = total;
-            packet.offset = offset;
-            packet.data = data;
-            return packet;
-        }
-
-        private static void writeString(ByteBuf buffer, String s) {
-            byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            buffer.writeShort(bytes.length);
-            buffer.writeBytes(bytes);
-        }
-
-        private static String readString(ByteArrayDataInput buffer) {
-            byte[] bytes = new byte[buffer.readUnsignedShort()];
-            buffer.readFully(bytes);
-            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        }
-
-        @Override
-        public void encode(ByteBuf buffer) {
-            writeString(buffer, sha1);
-            writeString(buffer, name);
-            buffer.writeInt(total);
-            buffer.writeInt(offset);
-            buffer.writeInt(data.length);
-            buffer.writeBytes(data);
-        }
-
-        @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
-            SchematicChunkPacket message = new SchematicChunkPacket(super.message);
-
-            message.sha1 = readString(buffer);
-            message.name = readString(buffer);
-            message.total = buffer.readInt();
-            message.offset = buffer.readInt();
-            int length = buffer.readInt();
-            if (length < 0 || length > SchematicUploads.CHUNK_BYTES) throw new IllegalArgumentException("chunk length " + length);
-            message.data = new byte[length];
-            buffer.readFully(message.data);
-
-            return message;
-        }
-
-        @Override
-        public String toString() {
-            return "SchematicChunkPacket [" + name + " " + offset + "+" + data.length + "/" + total + "]";
         }
     }
 
