@@ -17,6 +17,7 @@ import com.recursive_pineapple.matter_manipulator.common.items.manipulator.Trans
 
 import gcewing.architecture.ArchitectureCraft;
 import gcewing.architecture.common.shape.Shape;
+import gcewing.architecture.common.shape.Window;
 import gcewing.architecture.common.tile.TileShape;
 import gcewing.architecture.compat.BlockCompatUtils;
 import gcewing.architecture.compat.IBlockState;
@@ -30,6 +31,12 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
     public PortableItemStack material;
     @SerializedName("c")
     public PortableItemStack cladding;
+    // Schematic-import fork: banister offset (sixteenths of a block along the shape's own x) and the connections
+    // turned off with the chisel (ForgeDirection flags). Stock never copied these.
+    @SerializedName("ox")
+    public int offsetX;
+    @SerializedName("dc")
+    public int disconnected;
 
     public static ArchitectureCraftAnalysisResult analyze(TileEntity te) {
         if (!(te instanceof TileShape tileShape)) return null;
@@ -41,6 +48,9 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         result.material = new PortableItemStack(
             new ItemStack(tileShape.baseBlockState.getBlock(), 0, BlockCompatUtils.getMetaFromBlockState(tileShape.baseBlockState))
         );
+
+        result.offsetX = (int) Math.round(tileShape.getOffsetX() * 16);
+        result.disconnected = tileShape.disabledConnections;
 
         if (tileShape.secondaryBlockState != null) {
             result.cladding = new PortableItemStack(
@@ -64,6 +74,8 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
                 if (!addCladding(ctx, tileShape, false)) { return false; }
             }
 
+            tileShape.setOffsetX(offsetX / 16.0);
+            tileShape.disabledConnections = disconnected;
             tileShape.markChanged();
 
             return true;
@@ -105,7 +117,7 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         Block block = existingCladding.getBlock();
         int meta = BlockCompatUtils.getMetaFromBlockState(existingCladding);
 
-        context.givePlayerItems(ArchitectureCraft.content.itemCladding.newStack(block, meta, 1));
+        context.givePlayerItems(secondaryStack(block, meta));
 
         if (!simulate) {
             tileShape.secondaryBlockState = null;
@@ -118,7 +130,7 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
 
         if (block == null) return false;
 
-        ItemStack claddingStack = ArchitectureCraft.content.itemCladding.newStack(block, cladding.getMeta(), 1);
+        ItemStack claddingStack = secondaryStack(block, cladding.getMeta());
 
         if (!context.tryConsumeItems(claddingStack)) {
             if (!simulate) {
@@ -133,6 +145,15 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         }
 
         return true;
+    }
+
+    /**
+     * The item that supplies a second material: windows take the glass pane itself (Window.isValidSecondaryMaterial),
+     * everything else a cladding sheet.
+     */
+    private ItemStack secondaryStack(Block block, int meta) {
+        if (Shape.forId(shape).kind instanceof Window) return new ItemStack(block, 1, meta);
+        return ArchitectureCraft.content.itemCladding.newStack(block, meta, 1);
     }
 
     @Override
@@ -158,7 +179,9 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
 
     @Override
     public void transform(Transform transform) {
-
+        disconnected = transform.applyBits(disconnected) & 0xFF;
+        // A mirror swaps the shape's left and right, so the banister offset changes sign.
+        if (transform.flipX ^ transform.flipY ^ transform.flipZ) offsetX = -offsetX;
     }
 
     @Override
@@ -173,6 +196,8 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         dup.shape = shape;
         dup.material = material == null ? null : material.clone();
         dup.cladding = cladding == null ? null : cladding.clone();
+        dup.offsetX = offsetX;
+        dup.disconnected = disconnected;
 
         return dup;
     }
@@ -184,6 +209,8 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         result = prime * result + shape;
         result = prime * result + ((material == null) ? 0 : material.hashCode());
         result = prime * result + ((cladding == null) ? 0 : cladding.hashCode());
+        result = prime * result + offsetX;
+        result = prime * result + disconnected;
         return result;
     }
 
@@ -194,6 +221,7 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
         if (getClass() != obj.getClass()) return false;
         ArchitectureCraftAnalysisResult other = (ArchitectureCraftAnalysisResult) obj;
         if (shape != other.shape) return false;
+        if (offsetX != other.offsetX || disconnected != other.disconnected) return false;
         if (material == null) {
             if (other.material != null) return false;
         } else if (!material.equals(other.material)) return false;
@@ -210,6 +238,10 @@ public class ArchitectureCraftAnalysisResult implements ITileAnalysisIntegration
             + material
             + ", cladding="
             + cladding
+            + ", offsetX="
+            + offsetX
+            + ", disconnected="
+            + disconnected
             + "]";
     }
 }
