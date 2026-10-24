@@ -19,10 +19,19 @@ import net.minecraftforge.common.DimensionManager;
 
 import cpw.mods.fml.common.Loader;
 
+import gregtech.api.GregTechAPI;
+import gregtech.api.enums.Materials;
+import gregtech.api.enums.OrePrefixes;
+import gregtech.api.util.GTOreDictUnificator;
+import gregtech.common.blocks.BlockFrameBox;
+
 import com.recursive_pineapple.matter_manipulator.MMMod;
+import com.recursive_pineapple.matter_manipulator.asm.Optional;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockAnalyzer.RegionAnalysis;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockSpec;
 import com.recursive_pineapple.matter_manipulator.common.building.PendingBlock;
+import com.recursive_pineapple.matter_manipulator.common.utils.Mods;
+import com.recursive_pineapple.matter_manipulator.common.utils.Mods.Names;
 
 import org.joml.Vector3i;
 
@@ -174,6 +183,12 @@ public final class SchematicImport {
             for (int z = 0; z < schematic.length; z++) {
                 for (int x = 0; x < schematic.width; x++) {
                     try {
+                        if (Mods.GregTech.isModLoaded() && isFrameWithoutMaterial(world, x, y, z)) {
+                            // An older schematic cut the frame's material id down to its low bits.
+                            schematic.unknownBlocks.merge("gregtech:gt.blockframes (material lost)", 1, Integer::sum);
+                            continue;
+                        }
+
                         final BlockSpec spec = BlockSpec.fromBlock(null, world, x, y, z);
                         if (spec.skipWhenCopying()) continue;
 
@@ -208,6 +223,14 @@ public final class SchematicImport {
         );
 
         return new Analysis(new Vector3i(schematic.width - 1, schematic.height - 1, schematic.length - 1), blocks);
+    }
+
+    /** A GT frame box whose metadata names a material that has no frame (the material id got truncated). */
+    @Optional(Names.GREG_TECH_NH)
+    private static boolean isFrameWithoutMaterial(World world, int x, int y, int z) {
+        if (world.getBlock(x, y, z) != GregTechAPI.sBlockFrames) return false;
+        final Materials material = BlockFrameBox.getMaterial(world.getBlockMetadata(x, y, z));
+        return material == null || GTOreDictUnificator.get(OrePrefixes.frameGt, material, 1) == null;
     }
 
     // #endregion

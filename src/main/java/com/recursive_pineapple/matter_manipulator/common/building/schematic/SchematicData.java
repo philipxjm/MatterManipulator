@@ -25,7 +25,8 @@ public class SchematicData {
 
     public final int width, height, length;
     public final Block[] blocks;
-    public final byte[] meta;
+    /** Metadata: GTNH's goes past 15 (a GT frame box keeps its material in it). */
+    public final int[] meta;
     /** Tile entity NBT by index, with x/y/z relative to the schematic. */
     public final Map<Integer, NBTTagCompound> tiles = new HashMap<>();
     /** Registry names in the file that this game does not have; those blocks read as air. */
@@ -36,7 +37,7 @@ public class SchematicData {
         this.height = height;
         this.length = length;
         this.blocks = new Block[width * height * length];
-        this.meta = new byte[width * height * length];
+        this.meta = new int[width * height * length];
     }
 
     public int index(int x, int y, int z) {
@@ -64,18 +65,20 @@ public class SchematicData {
         final int n = width * height * length;
         final byte[] ids = tag.getByteArray("Blocks");
         final byte[] data = tag.getByteArray("Data");
+        // The high byte of metadata past 255 (the Schematica fork writes it).
+        final byte[] dataHigh = tag.getByteArray("AddData");
         if (ids.length != n || data.length != n) { throw new IOException("Blocks/Data length does not match the size"); }
-        // High bits of block ids: a nibble array ("AddBlocks", MCEdit/Schematica) or one byte per block ("Add",
-        // Schematica's schematicplus format, or an AddBlocks that is one byte per block).
-        byte[] add = tag.hasKey("AddBlocks") ? tag.getByteArray("AddBlocks") : null;
-        final boolean addPerBlock;
-        if (add != null) {
-            addPerBlock = add.length == n;
-        } else if (tag.hasKey("Add")) {
+        // High bits of block ids: one byte per block ("Add", which the Schematica fork writes for ids past 4095 next
+        // to the nibbles, or an AddBlocks that is one byte per block from the schematicplus format), else a nibble
+        // array ("AddBlocks", MCEdit/Schematica), which only reaches id 4095.
+        byte[] add = null;
+        boolean addPerBlock = false;
+        if (tag.hasKey("Add") && tag.getByteArray("Add").length == n) {
             add = tag.getByteArray("Add");
             addPerBlock = true;
-        } else {
-            addPerBlock = false;
+        } else if (tag.hasKey("AddBlocks")) {
+            add = tag.getByteArray("AddBlocks");
+            addPerBlock = add.length == n;
         }
 
         final Map<Integer, Block> byFileId = new HashMap<>();
@@ -116,7 +119,7 @@ public class SchematicData {
                 block = Blocks.air;
             }
             schematic.blocks[i] = block;
-            schematic.meta[i] = (byte) (data[i] & 0xf);
+            schematic.meta[i] = (data[i] & 0xff) | (i < dataHigh.length ? (dataHigh[i] & 0xff) << 8 : 0);
         }
 
         final NBTTagList tiles = tag.getTagList("TileEntities", Constants.NBT.TAG_COMPOUND);

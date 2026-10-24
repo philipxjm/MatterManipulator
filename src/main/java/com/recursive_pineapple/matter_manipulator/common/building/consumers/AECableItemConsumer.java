@@ -29,18 +29,10 @@ public class AECableItemConsumer implements IItemConsumer {
     public void consume(IPseudoInventory inv, BigItemStack in, BigItemStack out, int flags) {
         if (in.getItem() != AE_GLASS_CABLE.item(AEColor.Transparent)) return;
 
-        AEColoredItemDefinition definition;
-        if (in.getItemDamage() <= AE_GLASS_CABLE.stack(AEColor.Transparent, 1).getItemDamage()) {
-            definition = AE_GLASS_CABLE;
-        } else if (in.getItemDamage() <= AE_COVERED_CABLE.stack(AEColor.Transparent, 1).getItemDamage()) {
-            definition = AE_COVERED_CABLE;
-        } else if (in.getItemDamage() <= AE_SMART_CABLE.stack(AEColor.Transparent, 1).getItemDamage()) {
-            definition = AE_SMART_CABLE;
-        } else if (in.getItemDamage() <= AE_DENSE_SMART_CABLE.stack(AEColor.Transparent, 1).getItemDamage()) {
-            definition = AE_DENSE_SMART_CABLE;
-        } else {
-            definition = AE_DENSE_COVERED_CABLE;
-        }
+        // Every AE part (anchors, terminals, P2P tunnels...) shares the cable item, so only step in for a real cable;
+        // anything else would be paid for with cables.
+        AEColoredItemDefinition definition = getCableDefinition(in.getItemDamage());
+        if (definition == null) return;
 
         boolean isPlanning = (flags & CONSUME_SIMULATED) == 1 && (flags & CONSUME_IGNORE_CREATIVE) == 1;
 
@@ -62,5 +54,19 @@ public class AECableItemConsumer implements IItemConsumer {
 
             if (in.getStackSize() <= 0) return;
         }
+    }
+
+    private static final AEColoredItemDefinition[] CABLES = { AE_GLASS_CABLE, AE_COVERED_CABLE, AE_SMART_CABLE,
+        AE_DENSE_SMART_CABLE, AE_DENSE_COVERED_CABLE };
+
+    /** The cable type with this damage value in any colour, or null if it is another part. */
+    private static AEColoredItemDefinition getCableDefinition(int damage) {
+        for (AEColoredItemDefinition cable : CABLES) {
+            for (AEColor color : AEColor.values()) {
+                ItemStack stack = cable.stack(color, 1);
+                if (stack != null && stack.getItemDamage() == damage) return cable;
+            }
+        }
+        return null;
     }
 }
