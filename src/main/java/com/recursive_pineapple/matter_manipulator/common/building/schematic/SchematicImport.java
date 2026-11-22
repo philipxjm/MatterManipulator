@@ -29,6 +29,7 @@ import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.asm.Optional;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockAnalyzer.RegionAnalysis;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockSpec;
+import com.recursive_pineapple.matter_manipulator.common.building.MultipartAnalysisResult;
 import com.recursive_pineapple.matter_manipulator.common.building.PendingBlock;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods.Names;
@@ -195,8 +196,9 @@ public final class SchematicImport {
                         final PendingBlock pending = spec.instantiate(world, x, y, z);
                         pending.analyze(world.getTileEntity(x, y, z), PendingBlock.ANALYZE_ALL & ~PendingBlock.ANALYZE_ARCH);
 
-                        // Multiparts need their neighbours placed first (as in BlockAnalyzer).
-                        if (pending.mp != null) {
+                        // Multiparts holding wires, gates and the like need their neighbours placed first (as in
+                        // BlockAnalyzer). Ones with only microblocks are solid and can be that support.
+                        if (pending.mp != null && ((MultipartAnalysisResult) pending.mp).hasAttachedParts()) {
                             pending.buildOrder = Math.max(pending.buildOrder, 100);
                         }
                         blocks.add(pending);

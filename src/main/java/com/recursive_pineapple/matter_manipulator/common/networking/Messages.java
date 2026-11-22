@@ -18,13 +18,13 @@ import net.minecraft.world.chunk.Chunk;
 
 import net.minecraftforge.common.util.ForgeDirection;
 
+import cpw.mods.fml.common.network.ByteBufUtils;
 import cpw.mods.fml.common.network.NetworkRegistry.TargetPoint;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 
-import com.google.common.io.ByteArrayDataInput;
 import com.gtnewhorizon.gtnhlib.util.CoordinatePacker;
 import com.gtnewhorizons.modularui.common.internal.network.NetworkUtils;
 import com.recursive_pineapple.matter_manipulator.GlobalMMConfig.DebugConfig;
@@ -36,6 +36,8 @@ import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMRen
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockRemoveMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockSelectMode;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.InterfaceCopyMode;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.P2PInterfaceCopyMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PendingAction;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PlaceMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.Shape;
@@ -62,6 +64,9 @@ import it.unimi.dsi.fastutil.longs.LongList;
 public enum Messages {
 
     MMBPressed(server(simple((player, stack, manipulator, state) -> { manipulator.onMMBPressed(player, stack, state); }))),
+    MMBPressedInGUI(server(cursorItemStackPacket((player, pickedStack, manipulator, state, isSneak, hoveredStack) -> {
+        manipulator.onMMBPressedInGUI(player, pickedStack, state, isSneak, hoveredStack);
+    }))),
     SetRemoveMode(server(enumPacket(BlockRemoveMode.values(), (state, value) -> state.config.removeMode = value))),
     SetPlaceMode(server(enumPacket(PlaceMode.values(), (player, stack, manipulator, state, value) -> {
 
@@ -92,6 +97,7 @@ public enum Messages {
     }))),
     SetA(server(locationPacket((player, stack, manipulator, state, location) -> {
         state.config.coordA = new Location(player.worldObj, location);
+        state.config.cableCorners = null;
     }))),
     MoveA(server(simple((player, stack, manipulator, state) -> {
         state.config.action = PendingAction.MOVING_COORDS;
@@ -101,6 +107,7 @@ public enum Messages {
     }))),
     SetB(server(locationPacket((player, stack, manipulator, state, location) -> {
         state.config.coordB = new Location(player.worldObj, location);
+        state.config.cableCorners = null;
     }))),
     MoveB(server(simple((player, stack, manipulator, state) -> {
         state.config.action = PendingAction.MOVING_COORDS;
@@ -110,6 +117,7 @@ public enum Messages {
     }))),
     SetC(server(locationPacket((player, stack, manipulator, state, location) -> {
         state.config.coordC = new Location(player.worldObj, location);
+        state.config.cableCorners = null;
     }))),
     MoveC(server(simple((player, stack, manipulator, state) -> {
         state.config.action = PendingAction.MOVING_COORDS;
@@ -133,6 +141,7 @@ public enum Messages {
         state.config.coordA = coordC;
         state.config.coordB = new Location(player.worldObj, newCoordBVector);
         state.config.coordC = coordA;
+        state.config.cableCorners = null;
     }))),
     MoveAll(server(simple((player, stack, manipulator, state) -> {
         state.config.action = PendingAction.MOVING_COORDS;
@@ -173,6 +182,8 @@ public enum Messages {
                 Vector3i newB = new Vector3i(newA).add(offsetB);
                 Vector3i newC = new Vector3i(newA).add(offsetC);
 
+                ItemMatterManipulator.moveCableCorners(state, new Vector3i(newA).sub(state.config.coordA.toVec()));
+
                 state.config.coordA = new Location(player.getEntityWorld(), newA);
                 state.config.coordB = new Location(player.getEntityWorld(), newB);
                 state.config.coordC = new Location(player.getEntityWorld(), newC);
@@ -184,6 +195,8 @@ public enum Messages {
 
                 Vector3i newA = MMUtils.getLookingAtLocation(player);
                 Vector3i newB = new Vector3i(newA).add(offsetB);
+
+                ItemMatterManipulator.moveCableCorners(state, new Vector3i(newA).sub(state.config.coordA.toVec()));
 
                 state.config.coordA = new Location(player.getEntityWorld(), newA);
                 state.config.coordB = new Location(player.getEntityWorld(), newB);
@@ -198,6 +211,16 @@ public enum Messages {
         state.config.coordAOffset = null;
         state.config.coordBOffset = null;
         state.config.coordCOffset = null;
+        state.config.cableCorners = null;
+    }))),
+    AddCableCorner(server(locationPacket((player, stack, manipulator, state, location) -> {
+        ItemMatterManipulator.addCableCorner(state, location);
+    }))),
+    MoveCablePath(server(locationPacket((player, stack, manipulator, state, offset) -> {
+        if (state.config.coordA != null) state.config.coordA.offset(offset.x, offset.y, offset.z);
+        if (state.config.coordB != null) state.config.coordB.offset(offset.x, offset.y, offset.z);
+
+        ItemMatterManipulator.moveCableCorners(state, offset);
     }))),
     ClearTransform(server(simple((player, stack, manipulator, state) -> {
         state.config.transform = new Transform();
@@ -332,8 +355,18 @@ public enum Messages {
     SetReplaceCribs(server(simple((player, stack, manipulator, state) -> {
         state.config.replaceCribsWithProxies = !state.config.replaceCribsWithProxies;
     }))),
-    SetReplaceInterfaces(server(simple((player, stack, manipulator, state) -> {
-        state.config.replaceInterfacesWithP2P = !state.config.replaceInterfacesWithP2P;
+    SetInterfaceCopyMode(server(simple((player, stack, manipulator, state) -> {
+        state.config.interfaceCopyMode = state.config.interfaceCopyMode == InterfaceCopyMode.COPY ?
+            InterfaceCopyMode.CONVERT_TO_P2P :
+            InterfaceCopyMode.COPY;
+    }))),
+    SetP2PInterfaceCopyMode(server(simple((player, stack, manipulator, state) -> {
+        state.config.p2pInterfaceCopyMode = state.config.p2pInterfaceCopyMode == P2PInterfaceCopyMode.LINK_TO_ORIGINAL ?
+            P2PInterfaceCopyMode.COPY_PATTERNS :
+            P2PInterfaceCopyMode.LINK_TO_ORIGINAL;
+    }))),
+    SetCopyAEPatterns(server(simple((player, stack, manipulator, state) -> {
+        state.config.shouldCopyAEPatterns = !state.config.shouldCopyAEPatterns;
     }))),
     SetArray(server(locationPacket((player, stack, manipulator, state, span) -> {
         state.config.arraySpan = span;
@@ -559,7 +592,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             return message.getNewPacket();
         }
 
@@ -598,7 +631,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             IntPacket message = new IntPacket(super.message);
             message.value = buffer.readInt();
             return message;
@@ -656,7 +689,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             UplinkPacket message = new UplinkPacket(super.message);
             message.worldId = buffer.readInt();
             message.location = buffer.readLong();
@@ -914,7 +947,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             SoundPacket message = new SoundPacket(super.message);
 
             message.worldId = buffer.readInt();
@@ -941,7 +974,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             LocationPacket message = new LocationPacket(super.message);
 
             message.location = buffer.readLong();
@@ -1028,7 +1061,7 @@ public enum Messages {
         }
 
         @Override
-        public MMPacket decode(ByteArrayDataInput buffer) {
+        public MMPacket decode(ByteBuf buffer) {
             BuildStatusPacket message = new BuildStatusPacket(super.message);
 
             int size = buffer.readInt();
@@ -1061,4 +1094,80 @@ public enum Messages {
         }
     }
 
+    private static interface ICursorItemStackSetter {
+
+        public void set(
+            EntityPlayer player,
+            ItemStack mmStack,
+            ItemMatterManipulator manipulator,
+            MMState state,
+            boolean isSneak,
+            ItemStack itemStack
+        );
+    }
+
+    public static class CursorItemStackData {
+
+        ItemStack itemStack;
+        boolean isSneak;
+
+        public CursorItemStackData(ItemStack itemStack, boolean isSneak) {
+            this.itemStack = itemStack;
+            this.isSneak = isSneak;
+        }
+    }
+
+    private static ISimplePacketHandler<CursorItemStackPacket> cursorItemStackPacket(ICursorItemStackSetter setter) {
+        return new ISimplePacketHandler<CursorItemStackPacket>() {
+
+            @Override
+            public void handle(EntityPlayer player, CursorItemStackPacket packet) {
+                ItemStack picked = player.inventory.getItemStack();
+
+                if (picked != null && picked.getItem() instanceof ItemMatterManipulator manipulator) {
+                    MMState state = ItemMatterManipulator.getState(picked);
+
+                    setter.set(player, picked, manipulator, state, packet.isSneak, packet.itemStack);
+
+                    ItemMatterManipulator.setState(picked, state);
+                }
+            }
+
+            @Override
+            public CursorItemStackPacket getNewPacket(Messages message, @Nullable Object value) {
+                CursorItemStackPacket packet = new CursorItemStackPacket(message);
+                if (value == null) return packet;
+
+                if (value instanceof CursorItemStackData cursorItemStackData) {
+                    packet.itemStack = cursorItemStackData.itemStack;
+                    packet.isSneak = cursorItemStackData.isSneak;
+                }
+                return packet;
+            }
+        };
+    }
+
+    private static class CursorItemStackPacket extends SimplePacket {
+
+        public ItemStack itemStack;
+        public boolean isSneak;
+
+        public CursorItemStackPacket(Messages message) {
+            super(message);
+        }
+
+        @Override
+        public void encode(ByteBuf buffer) {
+            ByteBufUtils.writeItemStack(buffer, itemStack);
+            buffer.writeBoolean(isSneak);
+        }
+
+        @Override
+        public MMPacket decode(ByteBuf buffer) {
+            CursorItemStackPacket message = new CursorItemStackPacket(super.message);
+            message.itemStack = ByteBufUtils.readItemStack(buffer);
+            message.isSneak = buffer.readBoolean();
+            return message;
+        }
+    }
 }

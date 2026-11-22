@@ -22,7 +22,7 @@ public class MMMod {
 
     public static final String MODID = "matter-manipulator";
     /** The stock release this fork is built on and interoperates with. */
-    public static final String PROTOCOL_VERSION = "0.1.55-GTNH";
+    public static final String PROTOCOL_VERSION = "0.1.77-GTNH";
     public static final Logger LOG = LogManager.getLogger(MODID);
 
     @SidedProxy(

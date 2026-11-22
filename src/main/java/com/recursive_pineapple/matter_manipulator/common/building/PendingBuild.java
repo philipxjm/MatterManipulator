@@ -11,6 +11,7 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 import net.minecraft.block.Block;
 import net.minecraft.entity.player.EntityPlayer;
@@ -19,29 +20,45 @@ import net.minecraft.init.Blocks;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.StatCollector;
 import net.minecraft.world.World;
+import net.minecraft.world.chunk.IChunkProvider;
 
 import net.minecraftforge.common.util.ForgeDirection;
 
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 
+import appeng.api.implementations.tiles.ISegmentedInventory;
+import appeng.api.parts.IPart;
+import appeng.api.parts.IPartHost;
+import appeng.api.parts.PartItemStack;
+import appeng.me.GridAccessException;
+import appeng.parts.AEBasePart;
+import appeng.parts.p2p.PartP2PTunnel;
+import appeng.util.SettingsFrom;
+
+import com.gtnewhorizon.gtnhlib.chat.customcomponents.ChatComponentItemName;
 import com.gtnewhorizon.gtnhlib.util.CoordinatePacker;
+import com.recursive_pineapple.matter_manipulator.GlobalMMConfig.BuildingConfig;
 import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.asm.Optional;
 import com.recursive_pineapple.matter_manipulator.common.building.BlockAnalyzer.IBlockApplyContext;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.ItemMatterManipulator;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.ItemMatterManipulator.ManipulatorTier;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMConfig;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PlaceMode;
 import com.recursive_pineapple.matter_manipulator.common.networking.Messages;
 import com.recursive_pineapple.matter_manipulator.common.networking.SoundResource;
 import com.recursive_pineapple.matter_manipulator.common.utils.BigFluidStack;
 import com.recursive_pineapple.matter_manipulator.common.utils.BigItemStack;
+import com.recursive_pineapple.matter_manipulator.common.utils.ItemId;
 import com.recursive_pineapple.matter_manipulator.common.utils.MMUtils;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods;
 import com.recursive_pineapple.matter_manipulator.common.utils.Mods.Names;
@@ -57,12 +74,20 @@ import it.unimi.dsi.fastutil.longs.LongList;
 public class PendingBuild extends AbstractBuildable {
 
     private final Deque<PendingBlock> pendingBlocks;
+    private final long airFilterBudgetNanos;
+    private int airFilterRemaining;
+    private long shuffledWithoutProgress;
+    /** Set once nothing else can be placed, so multiparts stop waiting for a support that isn't coming. */
+    private boolean placeUnsupported;
     private final HashSet<Long> visited = new HashSet<>();
 
     private final LongList errors = new LongArrayList();
     private final LongList warnings = new LongArrayList();
 
     private final WirelessLinkFixer wirelessLinkFixer;
+
+    private final List<PendingBlock> appliedP2POutputs = new ArrayList<>();
+    private final Set<Pair<Long, ForgeDirection>> convertedSources = new HashSet<>();
 
     public PendingBuild(
         EntityPlayer player,
@@ -73,21 +98,27 @@ public class PendingBuild extends AbstractBuildable {
         super(player, state, tier);
         this.pendingBlocks = new ArrayDeque<>(pendingBlocks);
         this.wirelessLinkFixer = new WirelessLinkFixer(state);
+        this.airFilterBudgetNanos = BuildingConfig.airFilterBudgetMicros * 1_000L;
+        this.airFilterRemaining = airFilterBudgetNanos > 0 ? pendingBlocks.size() : 0;
     }
 
     @Override
     public void tryPlaceBlocks(ItemStack stack, EntityPlayer player) {
         resetWarnings();
+
+        World world = player.worldObj;
+        wirelessLinkFixer.tryInit(world);
+        filterAirToAir(world);
+        if (airFilterRemaining > 0) {
+            sendInfoToPlayer(player, "mm.info.placed_remaining", 0, pendingBlocks.size());
+            return;
+        }
+
         refillPower(stack);
 
         List<PendingBlock> toPlace = new ArrayList<>(tier.placeSpeed);
 
         Integer lastChunkX = null, lastChunkZ = null;
-        int shuffleCount = 0;
-
-        World world = player.worldObj;
-
-        wirelessLinkFixer.tryInit(world);
 
         ProxiedWorld proxiedWorld = new ProxiedWorld(world);
 
@@ -95,8 +126,8 @@ public class PendingBuild extends AbstractBuildable {
 
         BlockSpec pooled = new BlockSpec();
 
-        // check every pending block that's left
-        while (toPlace.size() < tier.placeSpeed && !pendingBlocks.isEmpty()) {
+        int attemptsRemaining = Math.min(tier.placeSpeed, pendingBlocks.size());
+        for (; attemptsRemaining > 0 && !pendingBlocks.isEmpty(); attemptsRemaining--) {
             PendingBlock next = pendingBlocks.getFirst();
 
             int x = next.x, y = next.y, z = next.z;
@@ -107,7 +138,7 @@ public class PendingBuild extends AbstractBuildable {
             // if this block's chunk isn't loaded, ignore it completely
             if (!Objects.equals(chunkX, lastChunkX) || !Objects.equals(chunkZ, lastChunkZ)) {
                 if (!world.getChunkProvider().chunkExists(chunkX, chunkZ)) {
-                    pendingBlocks.removeFirst();
+                    takePendingBlock();
                     continue;
                 } else {
                     lastChunkX = chunkX;
@@ -116,13 +147,12 @@ public class PendingBuild extends AbstractBuildable {
             }
 
             if (y < 0 || y > 255) {
-                pendingBlocks.removeFirst();
+                takePendingBlock();
                 continue;
             }
 
-            // if this block is protected, ignore it completely and print a warning
-            if (!isEditable(world, x, y, z, true)) {
-                pendingBlocks.removeFirst();
+            if (next.spec.isAir() && world.isAirBlock(x, y, z)) {
+                takePendingBlock();
                 continue;
             }
 
@@ -132,10 +162,23 @@ public class PendingBuild extends AbstractBuildable {
                 break;
             }
 
+            // if this block is protected, ignore it completely and print a warning
+            if (!isEditable(world, x, y, z, true)) {
+                takePendingBlock();
+                continue;
+            }
+
+            // wires and gates drop themselves without their support, which may be a multipart that's placed later
+            if (next.mp != null && !placeUnsupported && !((MultipartAnalysisResult) next.mp).hasSupport(world, x, y, z)) {
+                pendingBlocks.addLast(pendingBlocks.removeFirst());
+                shuffledWithoutProgress++;
+                continue;
+            }
+
             PendingBlock existing = PendingBlock.fromBlock(world, x, y, z);
 
             if (next.spec.isAir() && existing.getBlock().isAir(world, x, y, z)) {
-                pendingBlocks.removeFirst();
+                takePendingBlock();
                 continue;
             }
 
@@ -143,11 +186,12 @@ public class PendingBuild extends AbstractBuildable {
 
             // if the existing block is the same as the one we're trying to place, just apply its tile data
             if (PendingBlock.areEquivalent(existing, next)) {
-                PendingBlock block = pendingBlocks.removeFirst();
+                PendingBlock block = takePendingBlock();
 
                 if (supportsConfiguring()) {
                     applyContext.pendingBlock = block;
                     block.apply(applyContext, world);
+                    rememberP2POutputs(block);
                     playSound(world, x, y, z, SoundResource.MOB_ENDERMEN_PORTAL);
                 }
 
@@ -169,19 +213,14 @@ public class PendingBuild extends AbstractBuildable {
             // couldn't be placed
             if (!canPlace) {
                 pendingBlocks.addLast(pendingBlocks.removeFirst());
-                shuffleCount++;
-
-                if (shuffleCount > pendingBlocks.size()) {
-                    break;
-                } else {
-                    continue;
-                }
+                shuffledWithoutProgress++;
+                continue;
             }
 
             // if there's an existing block then remove it if possible
             if (!existing.getBlock().isAir(world, x, y, z)) {
                 if (!state.hasCap(ItemMatterManipulator.ALLOW_REMOVING)) {
-                    pendingBlocks.removeFirst();
+                    takePendingBlock();
                     continue;
                 }
 
@@ -199,14 +238,8 @@ public class PendingBuild extends AbstractBuildable {
             // if we can't place this block, shuffle it to the back of the list
             if (!next.getBlock().canPlaceBlockAt(proxiedWorld, next.x, next.y, next.z)) {
                 pendingBlocks.addLast(pendingBlocks.removeFirst());
-                shuffleCount++;
-
-                // if we've shuffled every block, then we'll never be able to place any of them
-                if (shuffleCount > pendingBlocks.size()) {
-                    break;
-                } else {
-                    continue;
-                }
+                shuffledWithoutProgress++;
+                continue;
             }
 
             if (!tryConsumePower(stack, world, x, y, z, next.spec)) {
@@ -218,31 +251,39 @@ public class PendingBuild extends AbstractBuildable {
 
             if (!visited.add(coord)) {
                 MMMod.LOG.warn("Tried to place block twice! " + next);
-                pendingBlocks.removeFirst();
+                takePendingBlock();
                 continue;
             }
 
-            toPlace.add(pendingBlocks.removeFirst());
+            toPlace.add(takePendingBlock());
         }
 
         // check if we could place any blocks
         if (toPlace.isEmpty()) {
-            if (!pendingBlocks.isEmpty()) {
+            if (pendingBlocks.isEmpty()) {
+                sendInfoToPlayer(player, "mm.info.finished_placing");
+            } else if (attemptsRemaining == 0 && shuffledWithoutProgress < pendingBlocks.size()) {
+                sendInfoToPlayer(player, "mm.info.placed_remaining", 0, pendingBlocks.size());
+            } else {
+                shuffledWithoutProgress = 0;
+                placeUnsupported = true;
                 sendErrorToPlayer(
                     player,
                     "mm.info.error.could_not_place",
                     pendingBlocks.size()
                 );
-            } else {
-                sendInfoToPlayer(player, "mm.info.finished_placing");
             }
+
+            if (Mods.AppliedEnergistics2.isModLoaded()) convertSourceInterfaces(world);
 
             actuallyGivePlayerStuff();
             playSounds();
             return;
         }
 
+        shuffledWithoutProgress = 0;
         PendingBlock first = toPlace.get(0);
+        if (first.mp == null) placeUnsupported = false;
 
         ItemStack perBlock = first.getStack();
         long total = 0;
@@ -298,6 +339,7 @@ public class PendingBuild extends AbstractBuildable {
                 if (supportsConfiguring()) {
                     applyContext.pendingBlock = pending;
                     pending.apply(applyContext, world);
+                    rememberP2POutputs(pending);
                 }
 
                 wirelessLinkFixer.tryApply(world, x, y, z);
@@ -310,15 +352,19 @@ public class PendingBuild extends AbstractBuildable {
                 break;
             }
 
+            // When swapping blocks, only notify the neighbours once the new block is in place, so that things
+            // attached to the old block (torches, wires, ...) don't pop off because they briefly see air
+            boolean replacing = !existing.isAir() && !pending.spec.isAir();
+
             if (!existing.isAir()) {
-                removeBlock(world, x, y, z, existing);
+                removeBlock(world, x, y, z, existing, !replacing);
             }
 
             if (!pending.spec.isAir()) {
                 Block block = pending.getBlock();
 
                 if (pending.getItem() instanceof ItemBlock itemBlock && Block.getBlockFromItem(itemBlock) == block) {
-                    itemBlock.placeBlockAt(
+                    boolean placed = itemBlock.placeBlockAt(
                         perBlock,
                         player,
                         player.worldObj,
@@ -331,8 +377,16 @@ public class PendingBuild extends AbstractBuildable {
                         0,
                         metadata
                     );
+
+                    if (!placed && replacing) {
+                        world.notifyBlocksOfNeighborChange(x, y, z, existing.getBlock());
+                    }
                 } else {
                     if (!world.setBlock(x, y, z, block, metadata, 3)) {
+                        if (replacing) {
+                            world.notifyBlocksOfNeighborChange(x, y, z, existing.getBlock());
+                        }
+
                         continue;
                     }
 
@@ -349,6 +403,7 @@ public class PendingBuild extends AbstractBuildable {
 
             applyContext.pendingBlock = pending;
             pending.apply(applyContext, world);
+            rememberP2POutputs(pending);
 
             wirelessLinkFixer.tryApply(world, x, y, z);
         }
@@ -393,177 +448,191 @@ public class PendingBuild extends AbstractBuildable {
             visited.remove(coord);
         }
 
-        if (Mods.AppliedEnergistics2.isModLoaded()) {
-            for (PendingBlock placed : toPlace) {
-                if (placed.smartCopy != null && placed.smartCopy.action == SmartCopyIntegration.SmartCopyAction.INTERFACE_TO_P2P) {
-                    placeSourceP2P(world, placed, applyContext);
-                }
-            }
-        }
+        if (Mods.AppliedEnergistics2.isModLoaded()) convertSourceInterfaces(world);
 
         actuallyGivePlayerStuff();
         playSounds();
     }
 
-    @Optional(Names.APPLIED_ENERGISTICS2)
-    private void placeSourceP2P(World world, PendingBlock placed, PendingBuildApplyContext applyContext) {
-        if (placed.smartCopy == null || placed.smartCopy.p2pActions == null || placed.smartCopy.p2pActions.isEmpty()) return;
+    private void filterAirToAir(World world) {
+        if (airFilterRemaining == 0) return;
 
-        for (SmartCopyIntegration.P2PInfo info : placed.smartCopy.p2pActions) {
-            placeSourceP2PSingle(world, placed, info);
+        IChunkProvider chunkProvider = world.getChunkProvider();
+        long start = System.nanoTime();
+        do {
+            PendingBlock block = pendingBlocks.getFirst();
+            boolean airToAir = block.spec.isAir() &&
+                chunkProvider.chunkExists(block.x >> 4, block.z >> 4) &&
+                world.isAirBlock(block.x, block.y, block.z);
+
+            pendingBlocks.removeFirst();
+            if (!airToAir) pendingBlocks.addLast(block);
+            airFilterRemaining--;
+        } while (airFilterRemaining > 0 && System.nanoTime() - start < airFilterBudgetNanos);
+    }
+
+    private PendingBlock takePendingBlock() {
+        shuffledWithoutProgress = 0;
+        return pendingBlocks.removeFirst();
+    }
+
+    private void rememberP2POutputs(PendingBlock applied) {
+        if (applied.smartCopy != null && applied.smartCopy.action == SmartCopyIntegration.SmartCopyAction.INTERFACE_TO_P2P) {
+            appliedP2POutputs.add(applied);
         }
     }
 
+    /** Array copies share their sources, so each one is converted once, after one of its outputs exists. */
     @Optional(Names.APPLIED_ENERGISTICS2)
-    private void placeSourceP2PSingle(World world, PendingBlock placed, SmartCopyIntegration.P2PInfo info) {
-        int srcX = info.srcX;
-        int srcY = info.srcY;
-        int srcZ = info.srcZ;
-        ForgeDirection srcSide = info.srcSide;
-        ForgeDirection destSide = info.destSide != null ? info.destSide : srcSide;
-        long freq = info.freq;
+    private void convertSourceInterfaces(World world) {
+        Set<Pair<Long, ForgeDirection>> triedThisTick = new HashSet<>();
 
-        if (srcSide == null || srcSide == ForgeDirection.UNKNOWN) {
-            MMMod.LOG.warn("SmartCopy: skipping P2P for block at {},{},{} - invalid source side", placed.x, placed.y, placed.z);
-            return;
-        }
+        for (PendingBlock applied : appliedP2POutputs) {
+            if (applied.smartCopy.p2pActions == null) continue;
 
-        TileEntity te = world.getTileEntity(srcX, srcY, srcZ);
-        if (!(te instanceof appeng.api.parts.IPartHost partHost)) {
-            MMMod.LOG.warn("SmartCopy: source at {},{},{} is not an IPartHost", srcX, srcY, srcZ);
-            return;
-        }
+            for (SmartCopyIntegration.P2PInfo info : applied.smartCopy.p2pActions) {
+                if (!hasP2POutput(world, applied, info)) continue;
 
-        java.util.List<ItemStack> extractedPatterns = new java.util.ArrayList<>();
-        appeng.api.parts.IPart existingPart = partHost.getPart(srcSide);
-        if (existingPart instanceof appeng.api.implementations.tiles.ISegmentedInventory srcSegInv) {
-            IInventory patternInv = srcSegInv.getInventoryByName("patterns");
-            if (patternInv != null) {
-                for (int i = 0; i < patternInv.getSizeInventory(); i++) {
-                    ItemStack pattern = patternInv.getStackInSlot(i);
-                    if (pattern != null) {
-                        extractedPatterns.add(pattern.copy());
-                        patternInv.setInventorySlotContents(i, null);
-                    }
-                }
+                Pair<Long, ForgeDirection> source = Pair.of(CoordinatePacker.pack(info.srcX, info.srcY, info.srcZ), info.srcSide);
+
+                if (convertedSources.contains(source) || !triedThisTick.add(source)) continue;
+
+                if (convertSourceInterface(world, info)) convertedSources.add(source);
             }
         }
 
-        if (existingPart != null) {
-            partHost.removePart(srcSide, false);
+        appliedP2POutputs.clear();
+    }
+
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    private static boolean hasP2POutput(World world, PendingBlock applied, SmartCopyIntegration.P2PInfo info) {
+        ForgeDirection destSide = info.destSide != null ? info.destSide : info.srcSide;
+
+        if (destSide == null) return false;
+        if (!(world.getTileEntity(applied.x, applied.y, applied.z) instanceof IPartHost partHost)) return false;
+
+        return partHost.getPart(destSide) instanceof PartP2PTunnel<?> tunnel && tunnel.isOutput() && tunnel.getFrequency() == info.freq;
+    }
+
+    /** @return false to try again later */
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    private boolean convertSourceInterface(World world, SmartCopyIntegration.P2PInfo info) {
+        int x = info.srcX;
+        int y = info.srcY;
+        int z = info.srcZ;
+        ForgeDirection side = info.srcSide;
+
+        if (side == null || side == ForgeDirection.UNKNOWN) return true;
+
+        if (!isEditable(world, x, y, z, false)) return true;
+
+        IPartHost partHost = world.getTileEntity(x, y, z) instanceof IPartHost host ? host : null;
+        IPart existing = partHost == null ? null : partHost.getPart(side);
+
+        // An earlier paste of the same copy may have converted it already
+        if (existing == null || info.sourcePart == null || !isSamePart(existing, info.sourcePart)) {
+            sendSourceWarning(x, y, z, new ChatComponentTranslation("mm.info.warning.p2p_source_changed"));
+            return true;
         }
 
-        ItemStack p2pStack = info.p2pItem != null ?
-            info.p2pItem.toStack() :
-            appeng.api.AEApi.instance()
-                .definitions()
-                .parts()
-                .p2PTunnelMEInterface()
-                .maybeStack(1)
-                .orNull();
-        if (p2pStack == null) {
-            MMMod.LOG.warn("SmartCopy: no P2P item available for source at {},{},{} side {}", srcX, srcY, srcZ, srcSide);
-            for (ItemStack pattern : extractedPatterns) {
-                givePlayerItems(pattern);
-            }
-            return;
-        }
+        ItemStack p2pStack = info.p2pItem.toStack();
 
         if (!tryConsumeItems(p2pStack)) {
-            sendWarningToPlayer(
-                player,
-                "mm.info.warning.only_message",
-                srcX,
-                srcY,
-                srcZ,
-                new ChatComponentText("Could not find P2P Interface for source side " + srcSide)
-            );
-            for (ItemStack pattern : extractedPatterns) {
-                givePlayerItems(pattern);
-            }
-            return;
+            sendSourceWarning(x, y, z, new ChatComponentTranslation("mm.info.warning.could_not_find_item", new ChatComponentItemName(p2pStack)));
+            return false;
         }
 
-        if (partHost.addPart(p2pStack, srcSide, player) == null) {
+        NBTTagCompound settings = existing instanceof AEBasePart aePart ? aePart.downloadSettings(SettingsFrom.MEMORY_CARD) : null;
+        List<ItemStack> upgrades = takeInventory(existing, "upgrades");
+        List<ItemStack> patterns = takeInventory(existing, "patterns");
+
+        AEAnalysisResult.removePart(this, partHost, side, false);
+
+        if (partHost.addPart(p2pStack, side, player) == null) {
             givePlayerItems(p2pStack);
-            sendWarningToPlayer(
-                player,
-                "mm.info.warning.only_message",
-                srcX,
-                srcY,
-                srcZ,
-                new ChatComponentText("Could not place P2P Interface on source " + srcSide + " side")
-            );
-            for (ItemStack pattern : extractedPatterns) {
-                givePlayerItems(pattern);
-            }
-            return;
+            givePlayerItems(upgrades.toArray(new ItemStack[0]));
+            givePlayerItems(patterns.toArray(new ItemStack[0]));
+            sendSourceWarning(x, y, z, new ChatComponentTranslation("mm.info.warning.could_not_place_p2p_source"));
+            return true;
         }
 
-        appeng.api.parts.IPart srcPart = partHost.getPart(srcSide);
-        if (srcPart instanceof appeng.parts.p2p.PartP2PTunnel<?> tunnel) {
+        IPart p2p = partHost.getPart(side);
+
+        if (p2p instanceof PartP2PTunnel<?> tunnel) {
             tunnel.output = false;
+
             try {
-                appeng.me.cache.P2PCache p2p = tunnel.getProxy()
-                    .getP2P();
-                p2p.updateFreq(tunnel, freq);
-            } catch (appeng.me.GridAccessException e) {
-                tunnel.setFrequency(freq);
+                tunnel.getProxy()
+                    .getP2P()
+                    .updateFreq(tunnel, info.freq);
+            } catch (GridAccessException e) {
+                tunnel.setFrequency(info.freq);
             }
+
             tunnel.onTunnelConfigChange();
         }
 
-        playSound(world, srcX, srcY, srcZ, SoundResource.MOB_ENDERMEN_PORTAL);
+        // Capacity cards add pattern slots
+        putInventory(p2p, "upgrades", upgrades);
+        if (settings != null && p2p instanceof AEBasePart aePart) aePart.uploadSettings(SettingsFrom.MEMORY_CARD, settings);
+        putInventory(p2p, "patterns", patterns);
 
-        if (!extractedPatterns.isEmpty()) {
-            appeng.api.parts.IPart newSrcPart = partHost.getPart(srcSide);
-            if (newSrcPart instanceof appeng.api.implementations.tiles.ISegmentedInventory srcSegInv) {
-                IInventory srcPatternInv = srcSegInv.getInventoryByName("patterns");
-                if (srcPatternInv != null) {
-                    int slot = 0;
-                    for (ItemStack pattern : extractedPatterns) {
-                        while (slot < srcPatternInv.getSizeInventory() && srcPatternInv.getStackInSlot(slot) != null) {
-                            slot++;
-                        }
-                        if (slot >= srcPatternInv.getSizeInventory()) {
-                            MMMod.LOG.warn(
-                                "SmartCopy: source P2P pattern inventory full at {},{},{} side {} - returning remaining patterns to player",
-                                srcX,
-                                srcY,
-                                srcZ,
-                                srcSide
-                            );
-                            givePlayerItems(pattern);
-                            continue;
-                        }
-                        srcPatternInv.setInventorySlotContents(slot, pattern);
-                        slot++;
-                    }
-                } else {
-                    MMMod.LOG.warn(
-                        "SmartCopy: no pattern inventory on source P2P at {},{},{} side {} - returning patterns to player",
-                        srcX,
-                        srcY,
-                        srcZ,
-                        srcSide
-                    );
-                    for (ItemStack pattern : extractedPatterns) {
-                        givePlayerItems(pattern);
-                    }
-                }
-            } else {
-                MMMod.LOG.warn(
-                    "SmartCopy: source P2P at {},{},{} side {} is not a segmented inventory - returning patterns to player",
-                    srcX,
-                    srcY,
-                    srcZ,
-                    srcSide
-                );
-                for (ItemStack pattern : extractedPatterns) {
-                    givePlayerItems(pattern);
-                }
+        playSound(world, x, y, z, SoundResource.MOB_ENDERMEN_PORTAL);
+
+        return true;
+    }
+
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    private static boolean isSamePart(IPart part, PortableItemStack expected) {
+        return ItemId.createWithoutNBT(part.getItemStack(PartItemStack.Break))
+            .equals(ItemId.createWithoutNBT(expected.toStack()));
+    }
+
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    private static List<ItemStack> takeInventory(IPart part, String name) {
+        List<ItemStack> taken = new ArrayList<>();
+
+        IInventory inv = part instanceof ISegmentedInventory segmented ? segmented.getInventoryByName(name) : null;
+
+        if (inv == null) return taken;
+
+        for (int slot = 0; slot < inv.getSizeInventory(); slot++) {
+            ItemStack stack = inv.getStackInSlot(slot);
+
+            if (stack != null) {
+                taken.add(stack);
+                inv.setInventorySlotContents(slot, null);
             }
         }
+
+        return taken;
+    }
+
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    private void putInventory(IPart part, String name, List<ItemStack> stacks) {
+        IInventory inv = part instanceof ISegmentedInventory segmented ? segmented.getInventoryByName(name) : null;
+
+        for (ItemStack stack : stacks) {
+            int slot = inv == null ? -1 : findFreeSlot(inv, stack);
+
+            if (slot == -1) {
+                givePlayerItems(stack);
+            } else {
+                inv.setInventorySlotContents(slot, stack);
+            }
+        }
+    }
+
+    private static int findFreeSlot(IInventory inv, ItemStack stack) {
+        for (int slot = 0; slot < inv.getSizeInventory(); slot++) {
+            if (inv.getStackInSlot(slot) == null && inv.isItemValidForSlot(slot, stack)) return slot;
+        }
+
+        return -1;
+    }
+
+    private void sendSourceWarning(int x, int y, int z, IChatComponent message) {
+        sendWarningToPlayer(player, "mm.info.warning.only_message", x, y, z, message);
     }
 
     @Override
@@ -600,10 +669,12 @@ public class PendingBuild extends AbstractBuildable {
         public static final double EU_PER_ACTION = 8192;
 
         public ItemStack manipulatorItemStack;
+        public MMState manipulatorState;
         public PendingBlock pendingBlock;
 
         public PendingBuildApplyContext(ItemStack manipulatorItemStack) {
             this.manipulatorItemStack = manipulatorItemStack;
+            this.manipulatorState = ItemMatterManipulator.getState(manipulatorItemStack);
         }
 
         @Override
@@ -638,6 +709,11 @@ public class PendingBuild extends AbstractBuildable {
         @Override
         public EntityPlayer getRealPlayer() {
             return player;
+        }
+
+        @Override
+        public MMConfig getConfig() {
+            return manipulatorState.config;
         }
 
         @Override

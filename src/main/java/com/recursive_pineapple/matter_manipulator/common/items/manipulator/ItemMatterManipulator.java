@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
@@ -66,7 +67,7 @@ import com.google.common.collect.MapMaker;
 import com.gtnewhorizons.modularui.api.UIInfos;
 import com.gtnewhorizons.modularui.api.drawable.AdaptableUITexture;
 import com.gtnewhorizons.modularui.api.drawable.IDrawable;
-import com.gtnewhorizons.modularui.api.drawable.OffsetDrawable;
+import com.gtnewhorizons.modularui.api.drawable.Text;
 import com.gtnewhorizons.modularui.api.drawable.shapes.Rectangle;
 import com.gtnewhorizons.modularui.api.math.Alignment;
 import com.gtnewhorizons.modularui.api.math.Color;
@@ -105,6 +106,8 @@ import com.recursive_pineapple.matter_manipulator.common.items.MMUpgrades;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMConfig.VoxelAABB;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockRemoveMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.BlockSelectMode;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.InterfaceCopyMode;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.P2PInterfaceCopyMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PendingAction;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.PlaceMode;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState.Shape;
@@ -603,7 +606,13 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                         on -> StatCollector.translateToLocal(on ? "mm.gui.smart_copy.on" : "mm.gui.smart_copy.off"));
                 }
 
-                addInfoLine(desc, "mm.tooltip.copying.auto_p2p_interfaces", state.config.replaceInterfacesWithP2P,
+                addInfoLine(desc, "mm.tooltip.copying.interface_mode", state.config.interfaceCopyMode,
+                    ItemMatterManipulator::getInterfaceCopyModeName);
+
+                addInfoLine(desc, "mm.tooltip.copying.p2p_interface_mode", state.config.p2pInterfaceCopyMode,
+                    ItemMatterManipulator::getP2PInterfaceCopyModeName);
+
+                addInfoLine(desc, "mm.tooltip.copying.copy_ae_patterns", state.config.shouldCopyAEPatterns,
                     on -> StatCollector.translateToLocal(on ? "mm.gui.smart_copy.on" : "mm.gui.smart_copy.off"));
             }
 
@@ -648,6 +657,14 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 + EnumChatFormatting.GRAY);
 
         // spotless:on
+    }
+
+    private static String getInterfaceCopyModeName(InterfaceCopyMode mode) {
+        return StatCollector.translateToLocal("mm.gui.smart_copy.interface_mode." + mode.name().toLowerCase(Locale.ROOT));
+    }
+
+    private static String getP2PInterfaceCopyModeName(P2PInterfaceCopyMode mode) {
+        return StatCollector.translateToLocal("mm.gui.smart_copy.p2p_interface_mode." + mode.name().toLowerCase(Locale.ROOT));
     }
 
     private <T> void addInfoLine(List<String> desc, String formatKey, T value) {
@@ -702,6 +719,9 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 state.config.coordB = null;
                 state.config.coordC = null;
                 state.config.coordBOffset = new Vector3i();
+                state.config.cableCorners = null;
+                state.config.cableHatchA = getClickedCableHatch(player, hit);
+                state.config.cableHatchB = null;
                 state.config.action = PendingAction.MOVING_COORDS;
             }
 
@@ -735,20 +755,34 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             case MOVING_COORDS: {
                 Vector3i lookingAt = MMUtils.getLookingAtLocation(player);
 
+                Location movedA = state.config.getCoordA(world, lookingAt);
+
+                if (state.config.placeMode == PlaceMode.CABLES) {
+                    moveCableCornersWithCoordA(state, movedA);
+
+                    if (state.config.coordAOffset != null && state.config.coordBOffset == null) {
+                        state.config.cableHatchA = getClickedCableHatch(player, hit);
+                    }
+
+                    if (state.config.coordAOffset == null && state.config.coordBOffset != null) {
+                        state.config.cableHatchB = getClickedCableHatch(player, hit);
+                    }
+                }
+
                 if (
                     state.config.placeMode == PlaceMode.GEOMETRY && state.config.coordAOffset == null &&
                         state.config.coordBOffset != null &&
                         state.config.coordCOffset == null &&
                         state.config.shape.requiresC()
                 ) {
-                    state.config.coordA = state.config.getCoordA(world, lookingAt);
+                    state.config.coordA = movedA;
                     state.config.coordB = state.config.getCoordB(world, lookingAt);
                     state.config.coordC = null;
                     state.config.coordAOffset = null;
                     state.config.coordBOffset = null;
                     state.config.coordCOffset = new Vector3i();
                 } else {
-                    state.config.coordA = state.config.getCoordA(world, lookingAt);
+                    state.config.coordA = movedA;
                     state.config.coordB = state.config.getCoordB(world, lookingAt);
                     state.config.coordC = state.config.getCoordC(world, lookingAt);
                     state.config.coordAOffset = null;
@@ -762,7 +796,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             case GEOM_SELECTING_BLOCK: {
                 state.config.action = null;
 
-                onPickBlock(world, player, itemStack, state, hit);
+                onPickBlock(world, player, itemStack, state, hit, player.isSneaking(), null);
 
                 return true;
             }
@@ -792,7 +826,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 return true;
             }
             case EXCH_SET_TARGET: {
-                onExchangeSetTarget(world, player, itemStack, state, hit);
+                onExchangeSetTarget(world, player, itemStack, state, hit, null);
                 state.config.action = null;
                 return true;
             }
@@ -802,12 +836,12 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 return true;
             }
             case EXCH_SET_REPLACE: {
-                onExchangeSetWhitelist(world, player, itemStack, state, hit);
+                onExchangeSetWhitelist(world, player, itemStack, state, hit, null);
                 state.config.action = null;
                 return true;
             }
             case PICK_CABLE: {
-                onPickCable(world, player, itemStack, state, hit);
+                onPickCable(world, player, itemStack, state, hit, null);
                 state.config.action = null;
                 return true;
             }
@@ -821,35 +855,131 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         return false;
     }
 
-    public void onMMBPressed(EntityPlayer player, ItemStack stack, MMState state) {
-        if (state.config.placeMode == PlaceMode.GEOMETRY) {
-            onPickBlock(player.getEntityWorld(), player, stack, state, MMUtils.getHitResult(player, true));
-        }
-        if (state.config.placeMode == PlaceMode.EXCHANGING) {
-            if (player.isSneaking()) {
-                onExchangeSetWhitelist(player.worldObj, player, stack, state, MMUtils.getHitResult(player, true));
-            } else {
-                onExchangeSetTarget(player.worldObj, player, stack, state, MMUtils.getHitResult(player, true));
-            }
-        }
-        if (state.config.placeMode == PlaceMode.CABLES) {
-            onPickCable(player.getEntityWorld(), player, stack, state, MMUtils.getHitResult(player, true));
+    /**
+     * @return The block that was clicked to place a cable path's end, which might be a laser hatch.
+     */
+    private static Vector3i getClickedCableHatch(EntityPlayer player, MovingObjectPosition hit) {
+        if (hit == null || player.isSneaking()) return null;
+
+        return new Vector3i(hit.blockX, hit.blockY, hit.blockZ);
+    }
+
+    /**
+     * @return true when the player is picking the end of a cable path, which is when left clicking adds a corner.
+     */
+    public static boolean canAddCableCorner(MMState state) {
+        return state.config.placeMode == PlaceMode.CABLES && state.config.action == PendingAction.MOVING_COORDS &&
+            state.config.coordA != null &&
+            state.config.coordAOffset == null &&
+            state.config.coordBOffset != null &&
+            state.config.coordCOffset == null;
+    }
+
+    /**
+     * Adds a corner to the cable path, pinned to the axes of the previous point.
+     *
+     * @return True if the corner was added, false if it can't be added or wouldn't move from the previous point.
+     */
+    public static boolean addCableCorner(MMState state, Vector3i point) {
+        if (!canAddCableCorner(state)) return false;
+
+        List<Vector3i> points = MMState.getCablePoints(state.config.coordA.toVec(), state.config.cableCorners, null);
+        Vector3i last = points.get(points.size() - 1);
+
+        Vector3i corner = MMState.pinToAxes(last, point);
+
+        if (corner.equals(last)) return false;
+
+        if (state.config.cableCorners == null) state.config.cableCorners = new ArrayList<>();
+
+        state.config.cableCorners.add(corner);
+
+        return true;
+    }
+
+    /**
+     * Moves every cable corner by an offset.
+     * Bent cable paths keep their shape.
+     */
+    public static void moveCableCorners(MMState state, Vector3i offset) {
+        if (state.config.cableCorners == null) return;
+
+        for (Vector3i corner : state.config.cableCorners) {
+            corner.add(offset);
         }
     }
 
-    private void onPickBlock(
+    /**
+     * Keeps a bent cable path together while coord A is being moved.
+     * When every coord is moving, the corners move along with them.
+     * When only coord A is moving, it's pinned to the axes of the first corner.
+     */
+    public static void moveCableCornersWithCoordA(MMState state, Location movedA) {
+        MMConfig config = state.config;
+
+        if (config.cableCorners == null || config.cableCorners.isEmpty()) return;
+        if (movedA == null || config.coordAOffset == null) return;
+
+        if (config.coordBOffset != null) {
+            if (config.coordA == null) return;
+
+            moveCableCorners(state, movedA.toVec().sub(config.coordA.toVec()));
+        } else {
+            Vector3i pinned = MMState.pinToAxes(config.cableCorners.get(0), movedA.toVec());
+
+            movedA.x = pinned.x;
+            movedA.y = pinned.y;
+            movedA.z = pinned.z;
+        }
+    }
+
+    public void onMMBPressed(EntityPlayer player, ItemStack stack, MMState state) {
+        if (state.config.placeMode == PlaceMode.GEOMETRY) {
+            onPickBlock(player.getEntityWorld(), player, stack, state, MMUtils.getHitResult(player, true), player.isSneaking(), null);
+        }
+        if (state.config.placeMode == PlaceMode.EXCHANGING) {
+            if (player.isSneaking()) {
+                onExchangeSetWhitelist(player.worldObj, player, stack, state, MMUtils.getHitResult(player, true), null);
+            } else {
+                onExchangeSetTarget(player.worldObj, player, stack, state, MMUtils.getHitResult(player, true), null);
+            }
+        }
+        if (state.config.placeMode == PlaceMode.CABLES) {
+            onPickCable(player.getEntityWorld(), player, stack, state, MMUtils.getHitResult(player, true), null);
+        }
+    }
+
+    static public void onMMBPressedInGUI(EntityPlayer player, ItemStack stack, MMState state, final boolean isSneaking, ItemStack hoveredStack) {
+        BlockSpec block = BlockSpec.fromStack(null, hoveredStack);
+
+        if (state.config.placeMode == PlaceMode.GEOMETRY) {
+            onPickBlock(player.getEntityWorld(), player, stack, state, null, isSneaking, block);
+        }
+        if (state.config.placeMode == PlaceMode.EXCHANGING) {
+            if (isSneaking) {
+                onExchangeSetWhitelist(player.worldObj, player, stack, state, null, block);
+            } else {
+                onExchangeSetTarget(player.worldObj, player, stack, state, null, block);
+            }
+        }
+        if (state.config.placeMode == PlaceMode.CABLES) {
+            onPickCable(player.getEntityWorld(), player, stack, state, null, block);
+        }
+    }
+
+    static private void onPickBlock(
         World world,
         EntityPlayer player,
         ItemStack stack,
         MMState state,
-        MovingObjectPosition hit
+        MovingObjectPosition hit,
+        final boolean add,
+        BlockSpec block
     ) {
 
-        BlockSpec block = BlockSpec.fromPickBlock(world, player, hit);
+        if (block == null) block = BlockSpec.fromPickBlock(world, player, hit);
 
         String whatKey = null;
-
-        boolean add = player.isSneaking();
 
         switch (state.config.blockSelectMode) {
             case CORNERS: {
@@ -907,15 +1037,15 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         }
     }
 
-    private void onExchangeSetTarget(
+    static private void onExchangeSetTarget(
         World world,
         EntityPlayer player,
         ItemStack stack,
         MMState state,
-        MovingObjectPosition hit
+        MovingObjectPosition hit,
+        BlockSpec block
     ) {
-
-        BlockSpec block = BlockSpec.fromPickBlock(player.worldObj, player, hit);
+        if (block == null) block = BlockSpec.fromPickBlock(player.worldObj, player, hit);
 
         if (hit != null) checkForAECables(state, block, world, hit.blockX, hit.blockY, hit.blockZ);
 
@@ -954,8 +1084,8 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         );
     }
 
-    private void onExchangeSetWhitelist(World world, EntityPlayer player, ItemStack stack, MMState state, MovingObjectPosition hit) {
-        BlockSpec block = BlockSpec.fromPickBlock(player.worldObj, player, hit);
+    static private void onExchangeSetWhitelist(World world, EntityPlayer player, ItemStack stack, MMState state, MovingObjectPosition hit, BlockSpec block) {
+        if (block == null) block = BlockSpec.fromPickBlock(player.worldObj, player, hit);
 
         if (hit != null) checkForAECables(state, block, world, hit.blockX, hit.blockY, hit.blockZ);
 
@@ -969,12 +1099,16 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         );
     }
 
-    private void onPickCable(World world, EntityPlayer player, ItemStack stack, MMState state, MovingObjectPosition hit) {
-        BlockSpec cable = new BlockSpec();
+    static private void onPickCable(World world, EntityPlayer player, ItemStack stack, MMState state, MovingObjectPosition hit, BlockSpec cable) {
+        if (cable == null) cable = new BlockSpec();
+
+        byte colour = -1;
 
         if (hit != null) {
             if (Mods.GregTech.isModLoaded()) {
-                MMUtils.getGTCable(cable, world, hit.blockX, hit.blockY, hit.blockZ);
+                if (MMUtils.getGTCable(cable, world, hit.blockX, hit.blockY, hit.blockZ)) {
+                    colour = MMUtils.getGTCableColour(world, hit.blockX, hit.blockY, hit.blockZ);
+                }
             }
 
             if (cable.isAir() && Mods.AppliedEnergistics2.isModLoaded()) {
@@ -987,6 +1121,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         }
 
         state.config.cables = cable.isAir() ? null : cable;
+        state.config.cableColour = colour;
 
         sendInfoToPlayer(
             player,
@@ -995,7 +1130,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         );
     }
 
-    private void checkForAECables(MMState state, BlockSpec spec, World world, int x, int y, int z) {
+    static private void checkForAECables(MMState state, BlockSpec spec, World world, int x, int y, int z) {
         if (state.hasCap(ALLOW_CABLES) && AppliedEnergistics2.isModLoaded()) {
             if (InteropConstants.AE_BLOCK_CABLE.matches(spec)) {
                 MMUtils.getAECable(spec, world, x, y, z);
@@ -1099,6 +1234,17 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
     }
 
     private IBuildable getPendingBuild(EntityPlayer player, ItemStack stack, MMState state) {
+        // the color from the offhand spray can isn't saved intentionally
+        if (state.config.placeMode == PlaceMode.CABLES && Mods.GregTech.isModLoaded()) {
+            Byte sprayColour = MMUtils.getOffhandSprayColour(player);
+
+            if (sprayColour != null) {
+                state.config.cableColour = sprayColour;
+
+                if (AppliedEnergistics2.isModLoaded()) MMUtils.recolourAECable(state.config.cables, sprayColour);
+            }
+        }
+
         List<PendingBlock> blocks = state.getPendingBlocks(tier, player.getEntityWorld());
 
         if (tier.maxRange != -1) {
@@ -1114,7 +1260,12 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             blocks.removeIf(block -> block.distanceTo2(playerLocation) > maxRange2);
         }
 
-        blocks.sort(PendingBlock.getComparator());
+        for (var block : blocks) {
+            // Caches the sort key
+            block.generateSortKey();
+        }
+
+        blocks.sort((a, b) -> a.sortKey.compareTo(b.sortKey));
 
         return new PendingBuild(player, state, tier, blocks);
     }
@@ -1285,6 +1436,10 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 .onClicked((menu, option, mouseButton, doubleClicked) -> {
                     UIBuildContext buildContext2 = new UIBuildContext(buildContext.getPlayer());
                     TransformWindow transformWindow = new TransformWindow(buildContext2);
+
+                    if (state.config.placeMode != PlaceMode.COPYING) {
+                        transformWindow.buildDirectionWidget();
+                    }
 
                     switch (state.config.placeMode) {
                         case CABLES -> transformWindow.buildCableMode();
@@ -1510,11 +1665,25 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 .done()
                 .option()
                     .label(() -> StatCollector.translateToLocalFormatted(
-                        "mm.gui.smart_copy.interfaces_to_p2p",
-                        StatCollector.translateToLocal(initialState.config.replaceInterfacesWithP2P ? "mm.gui.smart_copy.on" : "mm.gui.smart_copy.off")))
+                        "mm.gui.smart_copy.interface_mode",
+                        getInterfaceCopyModeName(initialState.config.interfaceCopyMode)))
                     .onClicked(() -> {
-                        Messages.SetReplaceInterfaces.sendToServer();
+                        Messages.SetInterfaceCopyMode.sendToServer();
                     })
+                .done()
+                .option()
+                    .label(() -> StatCollector.translateToLocalFormatted(
+                        "mm.gui.smart_copy.p2p_interface_mode",
+                        getP2PInterfaceCopyModeName(initialState.config.p2pInterfaceCopyMode)))
+                    .onClicked(() -> {
+                        Messages.SetP2PInterfaceCopyMode.sendToServer();
+                    })
+                .done()
+                .option()
+                    .label(() -> StatCollector.translateToLocalFormatted(
+                        "mm.gui.smart_copy.copy_ae_patterns",
+                        StatCollector.translateToLocal(initialState.config.shouldCopyAEPatterns ? "mm.gui.smart_copy.on" : "mm.gui.smart_copy.off")))
+                    .onClicked(() -> Messages.SetCopyAEPatterns.sendToServer())
                 .done()
             .done();
     }
@@ -1639,10 +1808,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             .done();
     }
 
-    private static final IDrawable[] BACKGROUND = {
-        new Rectangle().setColor(0xFF888888),
-        new OffsetDrawable(new Rectangle().setColor(0xFF111111), 2, 2, -4, -4),
-    };
+    private static final IDrawable LABEL_BACKGROUND = new Rectangle().setColor(0x80333333);
 
     private static Widget padding(int width, int height) {
         return new Row().setSize(width, height);
@@ -1653,11 +1819,11 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             .addChild(
                 new MultiChildWidget()
                     .addChild(
-                        new TextWidget(text)
+                        new TextWidget(new Text(text).shadow())
                             .setTextAlignment(Alignment.BottomCenter)
                             .setDefaultColor(Color.WHITE.dark(1))
                             .setSize(60, 13))
-                    .setBackground(BACKGROUND)
+                    .setBackground(LABEL_BACKGROUND)
                     .setSize(60, 18)
                     .setPos((130 - 60) / 2, 0))
             .setSize(130, 18);
@@ -1667,8 +1833,8 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
         return MMUtils.getLookingAtLocation(player);
     }
 
-    private static final AdaptableUITexture DISPLAY = AdaptableUITexture
-        .of("modularui:gui/background/display", 143, 75, 2);
+    private static final AdaptableUITexture TEXT_FIELD_BACKGROUND = AdaptableUITexture
+        .of("modularui2:gui/background/display_small", 18, 18, 1);
 
     private enum Coord {
         Copy,
@@ -1743,21 +1909,22 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                         })
                         .setBounds(Integer.MIN_VALUE, Integer.MAX_VALUE)
                         .setScrollBar()
-                        .setTextColor(Color.WHITE.dark(1))
-                        .setBackground(DISPLAY.withOffset(-2, -2, 4, 4))
-                        .setSize(36, 14)
-                        .setPos(2, 2)
+                        .setTextAlignment(Alignment.CenterLeft)
+                        .setTextColor(Color.WHITE.normal)
+                        .setSize(32, 18)
+                        .setPos(4, 0)
                         .setTicker(w -> {
                             if (!w.isFocused()) {
                                 ((NumericWidget) w).setValue(getterVisual.getAsInt());
                             }
                         })
                 ) : (
-                    new TextWidget("N/A")
+                    new TextWidget(new Text("N/A").shadow())
                         .setDefaultColor(Color.WHITE.dark(1))
-                        .setBackground(BACKGROUND)
+                        .setBackground(LABEL_BACKGROUND)
                         .setSize(40, 18)
                 ))
+                .setBackground(coord != Coord.Copy ? TEXT_FIELD_BACKGROUND : IDrawable.EMPTY)
                 .setSize(40, 18),
             padding(5, 5),
             new VanillaButtonWidget().setDisplayString(component.name() + " + 1")
@@ -1828,6 +1995,12 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             Vector3i loc = getTransformLocation(player, coord, currState);
 
             component.set(loc, i);
+
+            if (coord == Coord.Copy) {
+                moveCableCorners(currState, loc);
+            } else if (coord != Coord.Stack) {
+                currState.config.cableCorners = null;
+            }
 
             // Cylinder shape coords handling
             if (currState.config.placeMode == PlaceMode.GEOMETRY && currState.config.shape == Shape.CYLINDER) {
@@ -1918,12 +2091,16 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
 
                 switch (coord) {
                     case Copy -> {
-                        if (currState.config.coordA != null) {
-                            Messages.SetA.sendToServer(currState.config.coordA.toVec());
-                        }
+                        if (currState.config.cableCorners != null) {
+                            Messages.MoveCablePath.sendToServer(loc);
+                        } else {
+                            if (currState.config.coordA != null) {
+                                Messages.SetA.sendToServer(currState.config.coordA.toVec());
+                            }
 
-                        if (currState.config.coordB != null) {
-                            Messages.SetB.sendToServer(currState.config.coordB.toVec());
+                            if (currState.config.coordB != null) {
+                                Messages.SetB.sendToServer(currState.config.coordB.toVec());
+                            }
                         }
                     }
                     case CopyA -> {
@@ -2015,10 +2192,32 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             builder.bindPlayerInventory(buildContext.getPlayer(), 0, -9001);
         }
 
+        public void buildDirectionWidget() {
+            Widget widget = new MultiChildWidget()
+                .addChild(
+                    new DirectionDrawable()
+                        .asWidget()
+                        .setSize(30, 30)
+                        .setPos(3, 3))
+                .addChild(
+                    new TextWidget(new Text(RED + "X+ " + GREEN + "Y+ " + BLUE + "Z+").shadow())
+                        .setSize(50, 20)
+                        .setPos(34, 6))
+                .setBackground(LABEL_BACKGROUND)
+                .setSize(88, 30);
+
+            builder.widget(
+                new Row().widgets(
+                    padding(10, 10),
+                    new Column()
+                        .setAlignment(MainAxisAlignment.CENTER, CrossAxisAlignment.START)
+                        .widgets(widget)).fillParent());
+        }
+
         public void buildCopyMode() {
             if (!isClient()) return;
 
-            DynamicTextWidget rotationInfo = DynamicTextWidget.dynamicString(() -> {
+            DynamicTextWidget rotationInfo = DynamicTextWidget.dynamicText(() -> {
                 MMState currState = getState(
                     buildContext.getPlayer()
                         .getHeldItem());
@@ -2031,10 +2230,10 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 if (t.flipY) flips.add("Y");
                 if (t.flipZ) flips.add("Z");
 
-                return StatCollector.translateToLocalFormatted("mm.transform.info",
+                return new Text(StatCollector.translateToLocalFormatted("mm.transform.info",
                     flips.isEmpty() ? "None" : String.join(", ", flips),
                     MMUtils.getDirectionDisplayName(t.up),
-                    MMUtils.getDirectionDisplayName(t.forward)).replace("\\n", "\n");
+                    MMUtils.getDirectionDisplayName(t.forward)).replace("\\n", "\n")).shadow();
             });
 
             Widget[] left = {
@@ -2105,10 +2304,10 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                                 .setSize(30, 30)
                                 .setPos(3, 36))
                         .addChild(
-                            new TextWidget(RED + "X+ " + GREEN + "Y+ " + BLUE + "Z+")
+                            new TextWidget(new Text(RED + "X+ " + GREEN + "Y+ " + BLUE + "Z+").shadow())
                                 .setSize(50, 20)
                                 .setPos(34, 39))
-                        .setBackground(BACKGROUND)
+                        .setBackground(LABEL_BACKGROUND)
                         .setSize(88, 36 + 30),
                     padding(2, 2),
                     new Column()
@@ -2435,7 +2634,7 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
             ArrayList<Widget> widgets = new ArrayList<>();
             MMState state = getState(getStack());
 
-            if (state.config.coordA != null && state.config.coordB != null) {
+            if (state.config.coordA != null && state.config.coordB != null && state.config.cableCorners == null) {
                 CoordComponent component;
 
                 Location coordA = state.config.coordA;
@@ -2643,6 +2842,27 @@ public class ItemMatterManipulator extends Item implements ISpecialElectricItem,
                 setState(heldItem, state);
 
                 Messages.MMBPressed.sendToServer();
+            }
+
+            if (
+                event.button == 0 /* LMB */ && event.buttonstate &&
+                    heldItem.getItem() == ItemMatterManipulator.this &&
+                    Minecraft.getMinecraft().currentScreen == null
+            ) {
+                MMState state = getState(heldItem);
+
+                if (!canAddCableCorner(state)) return;
+
+                // don't attack or break blocks, especially important in creative mode
+                event.setCanceled(true);
+
+                Vector3i corner = new Vector3i(MMUtils.getLookingAtLocation(player)).add(state.config.coordBOffset);
+
+                if (addCableCorner(state, corner)) {
+                    setState(heldItem, state);
+
+                    Messages.AddCableCorner.sendToServer(corner);
+                }
             }
         }
 

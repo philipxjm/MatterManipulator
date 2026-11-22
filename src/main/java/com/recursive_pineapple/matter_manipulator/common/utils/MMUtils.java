@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.IntFunction;
@@ -80,14 +81,19 @@ import net.minecraftforge.fluids.IFluidHandler;
 import cpw.mods.fml.relauncher.ReflectionHelper;
 
 import gregtech.api.GregTechAPI;
+import gregtech.api.enums.Dyes;
 import gregtech.api.interfaces.metatileentity.IConnectable;
 import gregtech.api.interfaces.tileentity.IGregTechTileEntity;
 import gregtech.api.interfaces.tileentity.IHasInventory;
+import gregtech.api.items.MetaBaseItem;
 import gregtech.api.metatileentity.BaseMetaTileEntity;
 import gregtech.common.blocks.BlockMachines;
+import gregtech.common.items.behaviors.BehaviourSprayColor;
 import gregtech.common.tileentities.machines.MTEHatchInputBusME;
 import gregtech.common.tileentities.machines.MTEHatchInputME;
+import gregtech.crossmod.backhand.Backhand;
 
+import appeng.api.AEApi;
 import appeng.api.config.Upgrades;
 import appeng.api.implementations.IUpgradeableHost;
 import appeng.api.implementations.items.IUpgradeModule;
@@ -100,6 +106,8 @@ import appeng.api.storage.ICellWorkbenchItem;
 import appeng.api.storage.data.IAEFluidStack;
 import appeng.api.storage.data.IAEItemStack;
 import appeng.api.storage.data.IAEStack;
+import appeng.api.util.AEColor;
+import appeng.api.util.AEColoredItemDefinition;
 import appeng.parts.automation.UpgradeInventory;
 import appeng.tile.inventory.IAEStackInventory;
 import appeng.util.Platform;
@@ -267,9 +275,7 @@ public class MMUtils {
      * Gets the standard vanilla hit result for a player.
      */
     public static MovingObjectPosition getHitResult(EntityPlayer player, boolean includeLiquids) {
-        double reachDistance = player instanceof EntityPlayerMP mp ?
-            mp.theItemInWorldManager.getBlockReachDistance() :
-            Minecraft.getMinecraft().playerController.getBlockReachDistance();
+        double reachDistance = getBlockReachDistance(player);
 
         Vec3 posVec = Vec3.createVectorHelper(player.posX, player.posY + player.getEyeHeight(), player.posZ);
 
@@ -294,9 +300,7 @@ public class MMUtils {
      * Gets the 'location' that the player is looking at.
      */
     public static Vector3i getLookingAtLocation(EntityPlayer player) {
-        double dist = player instanceof EntityPlayerMP mp ?
-            mp.theItemInWorldManager.getBlockReachDistance() :
-            Minecraft.getMinecraft().playerController.getBlockReachDistance();
+        double dist = getBlockReachDistance(player);
 
         Vec3 start = getPosition(player, 0);
         Vec3 look = player.getLookVec();
@@ -327,6 +331,14 @@ public class MMUtils {
         }
 
         return target;
+    }
+
+    private static double getBlockReachDistance(EntityPlayer player) {
+        if (player instanceof EntityPlayerMP mp) {
+            // The server's base reach is 5 in both modes; the client uses 4.5 in survival.
+            return mp.theItemInWorldManager.getBlockReachDistance() - (player.capabilities.isCreativeMode ? 0 : 0.5);
+        }
+        return Minecraft.getMinecraft().playerController.getBlockReachDistance();
     }
 
     /**
@@ -1446,10 +1458,24 @@ public class MMUtils {
 
         List<PendingBlock> blocks = state.getPendingBlocks(manipulator.tier, player.getEntityWorld());
         RequiredItemAnalysis itemAnalysis = BlockAnalyzer
-            .getRequiredItemsForBuild(player, blocks, (flags & PLAN_ALL) != 0);
+            .getRequiredItemsForBuild(player, state, blocks, (flags & PLAN_ALL) != 0);
+
+        Object2LongOpenHashMap<ItemId> requiredItemCounts = new Object2LongOpenHashMap<>();
+
+        for (var entry : itemAnalysis.requiredItems.entrySet()) {
+            ItemStack stack = entry.getKey().getItemStack();
+
+            if (AppliedEnergistics2.isModLoaded()) {
+                AEColoredItemDefinition definition = getAECableDefinition(stack);
+
+                if (definition != null) stack = definition.stack(AEColor.Transparent, 1);
+            }
+
+            requiredItemCounts.addTo(ItemId.create(stack), entry.getValue());
+        }
 
         List<BigItemStack> requiredItems = mapToList(
-            itemAnalysis.requiredItems.entrySet(),
+            requiredItemCounts.object2LongEntrySet(),
             e -> BigItemStack.create(e.getKey(), e.getValue())
         );
 
@@ -1589,6 +1615,19 @@ public class MMUtils {
 
     private static final XSTR RNG = new XSTR();
 
+    /** The cross product of two directions, or UNKNOWN when they are on the same axis. */
+    public static ForgeDirection cross(ForgeDirection a, ForgeDirection b) {
+        int x = a.offsetY * b.offsetZ - a.offsetZ * b.offsetY;
+        int y = a.offsetZ * b.offsetX - a.offsetX * b.offsetZ;
+        int z = a.offsetX * b.offsetY - a.offsetY * b.offsetX;
+
+        for (ForgeDirection dir : ForgeDirection.VALID_DIRECTIONS) {
+            if (dir.offsetX == x && dir.offsetY == y && dir.offsetZ == z) return dir;
+        }
+
+        return ForgeDirection.UNKNOWN;
+    }
+
     public static Item getItemFromBlock(Block block, int metadata) {
         if (block == null) block = Blocks.air;
 
@@ -1661,6 +1700,35 @@ public class MMUtils {
         return false;
     }
 
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    public static void recolourAECable(BlockSpec spec, byte gtColour) {
+        if (spec == null) return;
+
+        AEColoredItemDefinition definition = getAECableDefinition(spec.toStack(1));
+        if (definition == null) return;
+        spec.setObject(definition.stack(gtColour < 0 ? AEColor.Transparent : AEColor.fromOrdinal(15 - gtColour), 1));
+    }
+
+    /**
+     * @return The AE cable typeof the stack, in any colour, or null if it isn't an AE cable.
+     */
+    @Optional(Names.APPLIED_ENERGISTICS2)
+    public static AEColoredItemDefinition getAECableDefinition(ItemStack stack) {
+        if (stack == null || !(stack.getItem() instanceof IPartItem partItem)) return null;
+        if (!(partItem.createPartFromItemStack(stack) instanceof IPartCable cable)) return null;
+
+        var parts = AEApi.instance().definitions().parts();
+
+        return switch (cable.getCableConnectionType()) {
+            case GLASS -> parts.cableGlass();
+            case COVERED -> parts.cableCovered();
+            case SMART -> parts.cableSmart();
+            case DENSE -> parts.cableDense();
+            case DENSE_COVERED -> parts.cableDenseCovered();
+            default -> null;
+        };
+    }
+
     public static boolean isOCCable(ImmutableBlockSpec spec) {
         if (spec == null) return false;
         return InteropConstants.OC_CABLE.matches(spec.getBlock(), 0);
@@ -1683,6 +1751,58 @@ public class MMUtils {
         }
 
         return false;
+    }
+
+    /**
+     * @return The colour of the GT cable at the given position, or -1 if it's unpainted or not a GT cable.
+     */
+    @Optional(Names.GREG_TECH_NH)
+    public static byte getGTCableColour(World world, int x, int y, int z) {
+        if (world.getTileEntity(x, y, z) instanceof IGregTechTileEntity igte && igte.getMetaTileEntity() instanceof IConnectable) {
+            return igte.getColorization();
+        }
+
+        return -1;
+    }
+
+    /**
+     * @return The colour of the GT spray can in the player's offhand,
+     *         -1 if its solvent, or null if there's no spray can in the offhand.
+     */
+    @Optional(Names.GREG_TECH_NH)
+    public static Byte getOffhandSprayColour(EntityPlayer player) {
+        ItemStack offhand = Backhand.getOffhandItem(player);
+
+        if (offhand == null || !(offhand.getItem() instanceof MetaBaseItem item)) return null;
+
+        List<Integer> dyes = item.mapEachBehavior(offhand, b -> b instanceof BehaviourSprayColor spray ? spray.getDye(offhand) : null);
+
+        if (dyes.isEmpty()) return null;
+
+        int dye = dyes.get(0);
+
+        // solvent cans return -1, the infinite can returns 16 when set to solvent (this is stupid)
+        return dye >= 0 && dye < Dyes.VALUES.length ? (byte) dye : -1;
+    }
+
+    /**
+     * Runs the action with the player's offhand slot (Backhand) emptied, then puts the item back.
+     */
+    @Optional(Names.GREG_TECH_NH)
+    public static boolean withoutOffhand(EntityPlayer player, BooleanSupplier action) {
+        int slot = Backhand.getOffhandSlot(player);
+        ItemStack[] inventory = player.inventory.mainInventory;
+
+        if (slot < 0 || slot >= inventory.length) return action.getAsBoolean();
+
+        ItemStack offhand = inventory[slot];
+        inventory[slot] = null;
+
+        try {
+            return action.getAsBoolean();
+        } finally {
+            inventory[slot] = offhand;
+        }
     }
 
     public static String getDirectionDisplayName(ForgeDirection dir) {

@@ -6,6 +6,7 @@ import static com.recursive_pineapple.matter_manipulator.common.utils.MMUtils.se
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Items;
@@ -17,6 +18,8 @@ import net.minecraft.world.World;
 import com.recursive_pineapple.matter_manipulator.GlobalMMConfig.DebugConfig;
 import com.recursive_pineapple.matter_manipulator.MMMod;
 import com.recursive_pineapple.matter_manipulator.common.items.manipulator.Location;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMConfig;
+import com.recursive_pineapple.matter_manipulator.common.items.manipulator.MMState;
 import com.recursive_pineapple.matter_manipulator.common.utils.BigFluidStack;
 import com.recursive_pineapple.matter_manipulator.common.utils.BigItemStack;
 import com.recursive_pineapple.matter_manipulator.common.utils.FluidId;
@@ -38,6 +41,22 @@ public class BlockAnalyzer {
      * The calling code must add another location (for example coord C) to get the real positions.
      */
     public static RegionAnalysis analyzeRegion(World world, Location a, Location b, boolean checkTiles) {
+        return analyzeRegion(world, a, b, checkTiles, null, null, null);
+    }
+
+    /**
+     * @param clipMin Optional, with clipMax: only this part of the region is looped over (world positions, inclusive)
+     * @param keep Optional: only the source blocks it accepts (by world position) are read. Others are skipped.
+     */
+    public static RegionAnalysis analyzeRegion(
+        World world,
+        Location a,
+        Location b,
+        boolean checkTiles,
+        Vector3i clipMin,
+        Vector3i clipMax,
+        Predicate<Vector3i> keep
+    ) {
         if (a == null || b == null || world.provider.dimensionId != a.worldId || a.worldId != b.worldId) return null;
 
         long pre = System.nanoTime();
@@ -49,7 +68,19 @@ public class BlockAnalyzer {
 
         analysis.blocks = new ArrayList<>();
 
-        for (Vector3i voxel : MMUtils.getBlocksInBB(a, deltas)) {
+        List<Vector3i> voxels;
+
+        if (clipMin == null) {
+            voxels = MMUtils.getBlocksInBB(a, deltas);
+        } else if (clipMin.x > clipMax.x || clipMin.y > clipMax.y || clipMin.z > clipMax.z) {
+            voxels = new ArrayList<>();
+        } else {
+            voxels = MMUtils.getBlocksInBB(new Location(a.worldId, clipMin.x, clipMin.y, clipMin.z), new Vector3i(clipMax).sub(clipMin));
+        }
+
+        for (Vector3i voxel : voxels) {
+            if (keep != null && !keep.test(voxel)) continue;
+
             BlockSpec spec = BlockSpec.fromBlock(null, world, voxel.x, voxel.y, voxel.z);
 
             if (spec.skipWhenCopying()) {
@@ -62,9 +93,9 @@ public class BlockAnalyzer {
                 pending.analyze(world.getTileEntity(voxel.x, voxel.y, voxel.z), PendingBlock.ANALYZE_ALL & ~PendingBlock.ANALYZE_ARCH);
             }
 
-            // FMP blocks (multiparts) depend on adjacent blocks for support,
-            // so they must be placed after regular blocks.
-            if (pending.mp != null) {
+            // Multiparts holding wires, gates and the like depend on adjacent blocks for support, so they must be
+            // placed after regular blocks. Ones with only microblocks are solid and can be that support.
+            if (pending.mp != null && ((MultipartAnalysisResult) pending.mp).hasAttachedParts()) {
                 pending.buildOrder = Math.max(pending.buildOrder, 100);
             }
 
@@ -109,6 +140,8 @@ public class BlockAnalyzer {
 
         public EntityPlayer getRealPlayer();
 
+        public MMConfig getConfig();
+
         public boolean tryApplyAction(double complexity);
 
         public void warn(IChatComponent message);
@@ -124,6 +157,7 @@ public class BlockAnalyzer {
         public World world;
         public int x, y, z;
         public EntityPlayer player;
+        public MMConfig config;
 
         public Object2LongOpenHashMap<ItemId> requiredItems = new Object2LongOpenHashMap<>();
 
@@ -158,6 +192,11 @@ public class BlockAnalyzer {
         @Override
         public EntityPlayer getRealPlayer() {
             return player;
+        }
+
+        @Override
+        public MMConfig getConfig() {
+            return config;
         }
 
         @Override
@@ -238,13 +277,7 @@ public class BlockAnalyzer {
                     }
                 }
 
-                ItemId id;
-
-                if (fuzzy && !req.getItem().getHasSubtypes()) {
-                    id = ItemId.createAsWildcard(req.getItemStack());
-                } else {
-                    id = ItemId.create(req.getItemStack());
-                }
+                ItemId id = ItemId.create(req.getItemStack());
 
                 requiredItems.addTo(id, req.getStackSize());
             }
@@ -306,12 +339,14 @@ public class BlockAnalyzer {
      */
     public static RequiredItemAnalysis getRequiredItemsForBuild(
         EntityPlayer player,
+        MMState state,
         List<PendingBlock> blocks,
         boolean fromScratch
     ) {
         BlockItemCheckContext context = new BlockItemCheckContext();
         context.player = player;
         context.world = player.getEntityWorld();
+        context.config = state.config;
 
         BlockSpec pooled = new BlockSpec();
 
